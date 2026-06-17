@@ -10,6 +10,10 @@ class SignalSnapshot:
     audio_energy_spike: bool = False
     silence_before: float = 0.0
     
+    # STT & Chat signals (Phase 1.2)
+    sentiment_shift: float = 0.0
+    chat_volume_spike: float = 0.0
+    
     # Aggregate
     composite_score: float = 0.0
 
