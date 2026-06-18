@@ -55,6 +55,13 @@
             <button class="filter-tab" role="tab" aria-selected="false" data-filter="REJECTED" id="tab-rejected">Đã từ chối</button>
         </div>
 
+        <div class="stream-filter" role="group" aria-label="Lọc theo stream">
+            <label class="stream-filter-label" for="stream-select">Stream</label>
+            <select class="stream-select" id="stream-select" aria-label="Chọn stream">
+                <option value="all">Tất cả streams</option>
+            </select>
+        </div>
+
         <div class="highlight-list" id="highlight-list" role="list" aria-live="polite">
             <!-- Highlight cards rendered by JS -->
             <div class="empty-state" id="empty-state">

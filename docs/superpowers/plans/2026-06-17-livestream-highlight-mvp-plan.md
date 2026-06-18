@@ -249,7 +249,7 @@
 | 1.5 | Data Ingestion (StreamRecorder, ChatCollector, StreamWorker, Bridge) | 9 tests | ✅ |
 | 1.6 | Web Dashboard (SQLite, FastAPI, Premium UI) | 8 tests | ✅ |
 | 1.7 | MVP Signal Layer ([plan](2026-06-18-mvp-signal-layer-plan.md)) | 17 tests | ✅ |
-| **TỔNG** | | **47/47** | **✅ DONE** |
+| **TỔNG** | | **116/116** | **✅ Phase 1 + 2a + 2c + 2b + 2d** |
 
 ## Phase 1.7: MVP Signal Layer Completion ✅ DONE
 
@@ -267,6 +267,71 @@
 | 1.7f | StateMachine extraction + full pipeline wiring | ✅ |
 
 **Tests:** 47/47 passing (+17 new tests from Phase 1.7)
+
+---
+
+---
+
+## Phase 2a: Boundaries + Draft/Final + LLM Gate ✅ DONE
+
+**Goal:** Draft/Final highlight lifecycle — DRAFT on ACTIVE, upgrade to FINAL on CLOSED via `HighlightProcessor`.
+
+**Plan:** [2026-06-18-phase-2-beta-plan.md](2026-06-18-phase-2-beta-plan.md)
+
+| Sub-phase | Nội dung | Status |
+|-----------|----------|--------|
+| 2a | SignalHistory + ContextExpander + LLMGate + Draft/Final DB + HighlightProcessor stub | ✅ |
+| 2a | Integration smoke test (DRAFT → CLOSED → FINAL) | ✅ |
+
+**Tests:** 82/82 passing (+1 new integration test from Phase 2a)
+
+---
+
+## Phase 2c: Overlap Resolution + Event Splitting ✅ DONE
+
+**Goal:** Batch-resolve overlapping events; split long events (>180s) into TikTok-length micro-highlights.
+
+**Plan:** [2026-06-18-phase-2-beta-plan.md](2026-06-18-phase-2-beta-plan.md)
+
+| Sub-phase | Nội dung | Status |
+|-----------|----------|--------|
+| 2c | PendingEventQueue + EventResolver + EventSplitter | ✅ |
+| 2c | HighlightProcessor full orchestration (resolve → split → FINAL) | ✅ |
+
+**Tests:** 94/94 passing (+12 new tests from Phase 2c)
+
+---
+
+## Phase 2b: Cold Start + Feedback Loop ✅ DONE
+
+**Goal:** Giảm false positive khi stream mới; học từ editor approve/reject/modify.
+
+**Plan:** [2026-06-18-phase-2-beta-plan.md](2026-06-18-phase-2-beta-plan.md)
+
+| Sub-phase | Nội dung | Status |
+|-----------|----------|--------|
+| 2b | BaselineCalibrator 3-tier + dynamic StateMachine thresholds | ✅ |
+| 2b | highlight_feedback table + API capture | ✅ |
+| 2b | FeedbackLearner + `python -m src.jobs.feedback_daily` | ✅ |
+| 2b | Reject reason modal + editor safeguards | ✅ |
+
+**Tests:** 103/103 passing (+9 new tests from Phase 2b)
+
+---
+
+## Phase 2d: Chat Lag + Multi-Stream ✅ DONE
+
+**Goal:** Bù trễ chat TikTok (~5s); hỗ trợ tối đa 3 stream đồng thời; lọc highlight theo stream trên dashboard.
+
+**Plan:** [2026-06-18-phase-2-beta-plan.md](2026-06-18-phase-2-beta-plan.md)
+
+| Sub-phase | Nội dung | Status |
+|-----------|----------|--------|
+| 2d | ChatLagCompensator + passive spike calibration | ✅ |
+| 2d | StreamManager (3 concurrent) + `/api/streams` endpoints | ✅ |
+| 2d | Stream selector dropdown trên dashboard | ✅ |
+
+**Tests:** 116/116 passing (+8 new tests from Phase 2d: StreamManager + stream API)
 
 ---
 

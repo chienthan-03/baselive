@@ -6,8 +6,10 @@
 // ── State ──────────────────────────────────────────────────────────────
 const state = {
     highlights: [],
+    streams: [],
     selected: null,      // currently selected highlight object
-    filter: 'all',       // 'all' | 'PENDING' | 'APPROVED' | 'REJECTED'
+    filter: 'all',       // 'all' | 'DRAFT' | 'FINAL' | 'PENDING'
+    streamFilter: 'all', // 'all' | stream_id
     startAdjust: 0,      // pre-roll delta (seconds, ≤ 0)
     endAdjust: 0,        // post-roll delta (seconds, ≥ 0)
     polling: null,       // setInterval handle
@@ -47,13 +49,33 @@ const dom = {
     btnReject:      $('btn-reject'),
     btnRefresh:     $('btn-refresh'),
     toast:          $('toast'),
+
+    rejectModal:        $('reject-modal'),
+    rejectReasonSelect: $('reject-reason-select'),
+    btnRejectCancel:    $('btn-reject-cancel'),
+    btnRejectConfirm:   $('btn-reject-confirm'),
+
+    streamSelect:       $('stream-select'),
+
+    detailContentType:  $('detail-content-type'),
+    qualityWarnings:    $('quality-warnings'),
 };
 
 // ── API helpers ────────────────────────────────────────────────────────
 const api = {
-    async getHighlights() {
-        const res = await fetch('/api/highlights');
+    async getHighlights(streamId) {
+        const params = new URLSearchParams();
+        if (streamId && streamId !== 'all') {
+            params.set('stream_id', streamId);
+        }
+        const qs = params.toString();
+        const res = await fetch(`/api/highlights${qs ? `?${qs}` : ''}`);
         if (!res.ok) throw new Error('Failed to fetch highlights');
+        return res.json();
+    },
+    async getStreams() {
+        const res = await fetch('/api/streams');
+        if (!res.ok) throw new Error('Failed to fetch streams');
         return res.json();
     },
     async approve(id) {
@@ -132,6 +154,23 @@ function setScore(score) {
     const offset = circumference - score * circumference;
     dom.scoreCircle.style.strokeDashoffset = offset;
     dom.scoreLabel.textContent = Math.round(score * 100);
+}
+
+// ── Filtering ──────────────────────────────────────────────────────────
+function getVisibleHighlights() {
+    return state.highlights.filter(h => getDuration(h) >= MIN_DURATION_SEC);
+}
+
+function applyFilter(highlights) {
+    let result = highlights;
+    if (state.streamFilter !== 'all') {
+        result = result.filter(h => h.stream_id === state.streamFilter);
+    }
+    if (state.filter === 'all') return result;
+    if (state.filter === 'PENDING') {
+        return result.filter(h => h.status === 'PENDING');
+    }
+    return result.filter(h => getHighlightType(h) === state.filter);
 }
 
 // ── Rendering ──────────────────────────────────────────────────────────
@@ -336,10 +375,56 @@ dom.filterTabs.forEach(tab => {
     });
 });
 
+// ── Stream selector ────────────────────────────────────────────────────
+function renderStreamOptions() {
+    const select = dom.streamSelect;
+    const current = state.streamFilter;
+    const knownIds = new Set(state.streams.map(s => s.stream_id));
+
+    // Include stream IDs from highlights not yet in active list
+    state.highlights.forEach(h => {
+        if (h.stream_id) knownIds.add(h.stream_id);
+    });
+
+    select.innerHTML = '<option value="all">Tất cả streams</option>';
+    [...knownIds].sort().forEach(streamId => {
+        const opt = document.createElement('option');
+        opt.value = streamId;
+        opt.textContent = streamId;
+        const active = state.streams.find(s => s.stream_id === streamId);
+        if (active?.running) {
+            opt.textContent += ' ●';
+        }
+        select.appendChild(opt);
+    });
+
+    if ([...select.options].some(o => o.value === current)) {
+        select.value = current;
+    } else {
+        select.value = 'all';
+        state.streamFilter = 'all';
+    }
+}
+
+dom.streamSelect.addEventListener('change', async () => {
+    state.streamFilter = dom.streamSelect.value;
+    await refreshData();
+});
+
 // ── Data fetching ──────────────────────────────────────────────────────
+async function refreshStreams() {
+    try {
+        state.streams = await api.getStreams();
+        renderStreamOptions();
+    } catch (e) {
+        console.error('Stream fetch error:', e);
+    }
+}
+
 async function refreshData() {
     try {
-        state.highlights = await api.getHighlights();
+        state.highlights = await api.getHighlights(state.streamFilter);
+        renderStreamOptions();
         renderList();
     } catch (e) {
         console.error('Fetch error:', e);
@@ -348,11 +433,15 @@ async function refreshData() {
 
 // ── Polling (every 8 seconds) ──────────────────────────────────────────
 function startPolling() {
-    state.polling = setInterval(refreshData, 8000);
+    state.polling = setInterval(async () => {
+        await refreshStreams();
+        await refreshData();
+    }, 8000);
 }
 
 // ── Init ───────────────────────────────────────────────────────────────
 (async () => {
+    await refreshStreams();
     await refreshData();
     startPolling();
 })();

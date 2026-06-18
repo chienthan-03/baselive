@@ -6,6 +6,12 @@ from pydantic import BaseModel
 import os
 
 from src.db.database import Database
+from src.engine.llm_gate import LLMGate
+from src.ingestion.stream_manager import (
+    CapacityError,
+    StreamAlreadyRunningError,
+    StreamManager,
+)
 
 # --- Dependency ---
 
@@ -17,11 +23,30 @@ def get_db() -> Generator:
     finally:
         db.close()
 
+_llm_gate = LLMGate()
+_stream_manager = StreamManager()
+
+
+def get_stream_manager() -> StreamManager:
+    return _stream_manager
+
 # --- Pydantic Schemas ---
 
 class AdjustRequest(BaseModel):
     start_pts: float
     end_pts: float
+
+class RejectRequest(BaseModel):
+    reason: str
+
+class StartStreamRequest(BaseModel):
+    url: str
+    stream_id: str
+
+def _ai_boundaries(h: dict) -> tuple[float, float]:
+    ai_start = h["ai_start_pts"] if h.get("ai_start_pts") is not None else h["start_pts"]
+    ai_end = h["ai_end_pts"] if h.get("ai_end_pts") is not None else h["end_pts"]
+    return ai_start, ai_end
 
 # --- Routers ---
 
@@ -68,6 +93,75 @@ def adjust_highlight(highlight_id: int, body: AdjustRequest, db: Database = Depe
     db.update_boundaries(highlight_id, body.start_pts, body.end_pts)
     db.update_status(highlight_id, "ADJUSTED")
     return {"id": highlight_id, "status": "ADJUSTED"}
+
+@router.post("/api/highlights/{highlight_id}/llm-analyze")
+def llm_analyze_highlight(highlight_id: int, db: Database = Depends(get_db)):
+    """Editor-triggered LLM boundary refinement (Pass 1c)."""
+    h = db.get_highlight(highlight_id)
+    if not h:
+        raise HTTPException(status_code=404, detail="Highlight not found")
+
+    boundary = BoundaryResult(
+        trigger_pts=h["start_pts"],
+        resolution_pts=h["end_pts"],
+        peak_pts=h.get("peak_pts") or h["start_pts"],
+        quality=h.get("quality") or "complete",
+        context_status="FULL",
+        stop_reason="editor_request",
+    )
+
+    result = _llm_gate.refine_boundary(
+        boundary,
+        transcript=h.get("reason") or "",
+        signals_summary={
+            "peak_pts": h.get("peak_pts"),
+            "peak_score": h.get("score"),
+            "keywords": [],
+        },
+        force=True,
+    )
+
+    if result is None:
+        raise HTTPException(status_code=503, detail="LLM analysis unavailable")
+
+    return {
+        "refined_start_pts": result.refined_start_pts,
+        "refined_end_pts": result.refined_end_pts,
+        "content_type": result.content_type,
+        "confidence": result.confidence,
+        "reasoning": result.reasoning,
+    }
+
+@router.get("/api/streams")
+def list_streams(mgr: StreamManager = Depends(get_stream_manager)):
+    """Return metadata for all active stream workers."""
+    return mgr.list_streams()
+
+@router.post("/api/streams/start")
+def start_stream(
+    body: StartStreamRequest,
+    mgr: StreamManager = Depends(get_stream_manager),
+):
+    """Start ingesting a new livestream."""
+    try:
+        mgr.start_stream(body.url, body.stream_id)
+    except CapacityError:
+        raise HTTPException(status_code=429, detail="Maximum concurrent streams reached")
+    except StreamAlreadyRunningError:
+        raise HTTPException(status_code=409, detail="Stream already running")
+    return {"stream_id": body.stream_id, "status": "started"}
+
+@router.post("/api/streams/{stream_id}/stop")
+def stop_stream(
+    stream_id: str,
+    mgr: StreamManager = Depends(get_stream_manager),
+):
+    """Stop an active stream worker."""
+    try:
+        mgr.stop_stream(stream_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    return {"stream_id": stream_id, "status": "stopped"}
 
 # --- Application factory ---
 
