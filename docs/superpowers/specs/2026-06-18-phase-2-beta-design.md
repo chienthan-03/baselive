@@ -49,13 +49,14 @@ StreamWorker
   │     ├─▶ SignalHistoryBuffer.append(snapshot)
   │     ├─▶ StateMachine.process()
   │     │
-  │     ├─ ACTIVE + new peak → create DRAFT highlight + draft clip
-  │     └─ CLOSED → look_forward (blocking) → HighlightProcessor
+  │     ├─ first ACTIVE → create DRAFT highlight + draft clip
+  │     └─ CLOSED → look_forward (blocking) → enqueue PendingEventQueue
   │
-  └─▶ HighlightProcessor (on CLOSED)
-        ├─ ContextExpander.look_back + look_forward
-        ├─ LLMGate.refine (if triggered)
-        ├─ EventResolver.resolve (pending queue)
+  └─▶ HighlightProcessor (when pending queue ready)
+        ├─ ContextExpander.look_back (per event)
+        ├─ LLMGate Pass 1: refine boundary (if triggered)
+        ├─ EventResolver.resolve (batch) → ambiguous_pairs
+        ├─ LLMGate Pass 2: resolve_overlap (ambiguous pairs)
         ├─ EventSplitter.split (if duration > 180s)
         └─ generate FINAL clip(s) → update DB
 
@@ -73,6 +74,7 @@ Dashboard ◀── SQLite ◀── DRAFT / FINAL highlights
 | `src/engine/context_expander.py` | Look-back / look-forward boundary detection |
 | `src/engine/llm_gate.py` | OpenRouter boundary refinement |
 | `src/engine/event_resolver.py` | Overlap / nested / adjacent resolution |
+| `src/engine/pending_event_queue.py` | Batch CLOSED events before resolve |
 | `src/engine/event_splitter.py` | Long event → micro-highlights |
 | `src/engine/baseline_calibrator.py` | 3-tier cold start thresholds |
 | `src/engine/feedback_learner.py` | Daily learning from editor feedback |
@@ -138,7 +140,8 @@ class ContextExpander:
     STEP_SEC = 1.0
 
     def look_back(self, peak_pts: float, history: SignalHistoryBuffer,
-                  transcript: TranscriptBuffer) -> float: ...
+                  transcript: TranscriptBuffer,
+                  event_history: EventHistoryStore) -> float: ...
 
     def look_forward(self, peak_pts: float, close_pts: float,
                      history: SignalHistoryBuffer,
@@ -346,23 +349,45 @@ def generate_final(self, start_pts: float, end_pts: float, event: EventCandidate
 | Draft duration < 15s | Show with "very short" warning |
 | `is_growing=true` | Disable approve/export; bookmark only |
 | Forced close at 600s | `quality="forced_close"`; alert editor to split manually |
+| Post-peak cooldown | Disable approve/export for 10s after peak (PHẦN 8B); draft still visible |
 
 ---
 
 ### 4.5 EventResolver
 
-Processes a queue of CLOSED events before final clip generation.
+Resolves overlap between multiple CLOSED events before final clip generation.
+
+#### PendingEventQueue
+
+Events are not finalized immediately on CLOSED. They enter a pending queue and are batch-resolved when ready:
+
+```python
+class PendingEventQueue:
+    MAX_WAIT_SEC = 30.0  # wait for adjacent event before finalizing alone
+
+    def enqueue(self, event: ResolvedEvent) -> None: ...
+    def is_ready(self, current_pts: float) -> bool:
+        # True if len >= 2 OR oldest event waited >= MAX_WAIT_SEC
+    def drain(self) -> List[ResolvedEvent]: ...
+```
+
+**Enqueue timing:** After `ContextExpander` + look-forward on CLOSED, `StreamWorker` calls `enqueue(to_resolved(boundary))`. If `is_ready()`, invoke `HighlightProcessor.process_pending_queue()`.
+
+**Rationale:** Adjacent events (< 5s gap) need both boundaries present to decide MERGE vs KEEP_BOTH. Single events finalize after 30s wait.
+
+#### Resolution types
 
 ```python
 @dataclass
-class ResolvedEvent:
-    start_pts: float
-    end_pts: float
-    peak_pts: float
-    peak_score: float
-    keywords: List[str]
-    transcript_excerpt: str
-    sub_events: List["ResolvedEvent"] = field(default_factory=list)
+class AmbiguousPair:
+    event_a: ResolvedEvent
+    event_b: ResolvedEvent
+    similarity: float
+
+@dataclass
+class ResolutionResult:
+    events: List[ResolvedEvent]
+    ambiguous_pairs: List[AmbiguousPair]
 
 class EventResolver:
     ADJACENT_GAP_SEC = 5.0
@@ -370,9 +395,11 @@ class EventResolver:
     TOPIC_SEPARATE_THRESHOLD = 0.3
     SCORE_RATIO_SUBORDINATE = 3.0
 
-    def resolve(self, events: List[ResolvedEvent]) -> List[ResolvedEvent]: ...
+    def resolve(self, events: List[ResolvedEvent]) -> ResolutionResult: ...
     def topic_similarity(self, a: ResolvedEvent, b: ResolvedEvent) -> float: ...
 ```
+
+`ambiguous_pairs` contains pairs with similarity in (0.3, 0.7) that were not auto-resolved. Passed to `LLMGate.resolve_overlap()` in HighlightProcessor step 4.
 
 #### Resolution matrix (keyword Jaccard)
 
@@ -386,7 +413,7 @@ class EventResolver:
 | ADJACENT gap < 5s + same topic | MERGE |
 | ADJACENT gap < 5s + different topic | KEEP_BOTH |
 
-Ambiguous similarity (0.3–0.7) → escalate to `LLMGate` with `resolve_overlap` task.
+Ambiguous similarity (0.3–0.7) → included in `ResolutionResult.ambiguous_pairs` for `LLMGate` Pass 2 (not resolved inline).
 
 ---
 
@@ -404,13 +431,15 @@ TIKTOK_MIN = 15.0
 MERGE_GAP = 5.0
 
 class EventSplitter:
-    def split(self, event: ResolvedEvent, platform: str = "tiktok") -> List[MicroHighlight]: ...
+    def split(self, event: ResolvedEvent, history: SignalHistoryBuffer,
+              platform: str = "tiktok") -> List[MicroHighlight]: ...
 ```
 
 #### Algorithm
 
 1. If duration ≤ 180s → return single highlight unchanged
-2. `find_local_maxima(score_curve, min_prominence=0.3, min_distance=15s)`
+2. Build `score_curve` from `SignalHistoryBuffer.get_range(event.start_pts, event.end_pts)` → composite_score per snapshot
+3. `find_local_maxima(score_curve, min_prominence=0.3, min_distance=15s)`
 3. If ≥ 2 peaks → create `MicroHighlight` per peak (valley before/after as boundaries)
 4. Merge micro-highlights with gap < 5s
 5. Discard clips < 15s; re-split clips > 60s at valley
@@ -558,6 +587,24 @@ class StreamManager:
 
 ```python
 @dataclass
+class ResolvedEvent:
+    start_pts: float
+    end_pts: float
+    peak_pts: float
+    peak_score: float
+    keywords: List[str]
+    transcript_excerpt: str
+    draft_highlight_id: Optional[int] = None
+    sub_events: List["ResolvedEvent"] = field(default_factory=list)
+
+class EventHistoryStore:
+    max_size: int = 10
+
+    def append(self, event: ResolvedEvent) -> None: ...
+    def get_overlapping(self, start_pts: float, end_pts: float) -> List[ResolvedEvent]: ...
+    def contains_pts(self, pts: float) -> Optional[ResolvedEvent]: ...
+
+@dataclass
 class ThresholdSet:
     open_thr: float
     confirm_thr: float
@@ -575,26 +622,35 @@ class MicroHighlight:
 class HighlightProcessor:
     def __init__(self, context_expander, llm_gate, event_resolver,
                  event_splitter, clip_generator, db): ...
-    self.event_history: EventHistoryStore  # deque, max 10 ResolvedEvents
+    self.event_history: EventHistoryStore
+    self.pending_queue: PendingEventQueue
 
-    def process_closed_event(
+    def on_event_closed(
         self,
         event: EventCandidate,
         history: SignalHistoryBuffer,
         transcript: TranscriptBuffer,
         clip_source: str,
         resolution_pts: float,
+        current_pts: float,
+    ) -> None:
+        # 1. boundary = context_expander.expand(event, resolution_pts, event_history)
+        # 2. enqueue to_resolved(boundary) on pending_queue
+        # 3. if pending_queue.is_ready(current_pts): process_pending_queue(...)
+
+    def process_pending_queue(
+        self,
+        history: SignalHistoryBuffer,
+        transcript: TranscriptBuffer,
+        clip_source: str,
     ) -> List[HighlightRecord]:
-        # 1. boundary = context_expander.expand(event, resolution_pts, self.event_history)
-        # 2. if llm_gate.should_refine_boundary(event, boundary):
-        #        boundary = llm_gate.refine_boundary(boundary)
-        # 3. resolved = event_resolver.resolve([to_resolved(boundary)])
-        # 4. for ambiguous pairs from step 3:
-        #        resolved = llm_gate.resolve_overlap(ambiguous_pair)
-        # 5. for each resolved: splits = event_splitter.split(e)
-        # 6. generate final clip(s)
-        # 7. upgrade DRAFT → FINAL in DB (per upgrade rules §4.4)
-        # 8. self.event_history.append(resolved events)
+        events = pending_queue.drain()
+        # 4. for each event: if llm_gate.should_refine_boundary(e): refine
+        # 5. result = event_resolver.resolve(events)
+        # 6. for pair in result.ambiguous_pairs: apply llm_gate.resolve_overlap(pair)
+        # 7. for each resolved event: splits = event_splitter.split(e, history)
+        # 8. generate final clip(s); upgrade DRAFT → FINAL per §4.4 rules
+        # 9. event_history.append(all finalized events)
         ...
 
     def to_resolved(self, boundary: BoundaryResult, event: EventCandidate) -> ResolvedEvent: ...
@@ -721,6 +777,7 @@ Phase 2 Beta is **DONE** when:
 | `src/api/static/index.html` | Modify | 2a, 2b |
 | `src/ingestion/stream_worker.py` | Modify | 2a |
 | `src/engine/event_resolver.py` | Create | 2c |
+| `src/engine/pending_event_queue.py` | Create | 2c |
 | `src/engine/event_splitter.py` | Create | 2c |
 | `src/engine/baseline_calibrator.py` | Create | 2b |
 | `src/engine/feedback_learner.py` | Create | 2b |
