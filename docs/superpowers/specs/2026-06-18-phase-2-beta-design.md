@@ -158,6 +158,8 @@ class ContextExpander:
 | e | Score < 0.15 for ≥ 5s continuous + different topic | Stop at last point before score rose |
 | f | `t` inside a previously CLOSED event | Stop at previous event `end_pts` |
 
+**Prior event source for condition (f):** `EventHistoryStore` — an in-memory deque on `HighlightProcessor` holding the last 10 `ResolvedEvent` records (start/end/peak PTS). Populated after each CLOSED event is fully processed. `ContextExpander.look_back()` receives this store as a parameter. Not read from DB (latency); DB is write-only for highlights.
+
 #### Look-forward stop conditions (realtime, blocking in StreamWorker)
 
 | # | Condition | Action |
@@ -190,14 +192,23 @@ When `trigger_pts < oldest_video_pts`:
 
 OpenRouter API for semantic boundary refinement. Env: `OPENROUTER_API_KEY`.
 
-#### Trigger conditions (at least one required)
+#### Trigger conditions
+
+**Pass 1 — boundary refinement** (`task: refine_highlight_boundary`), evaluated in `HighlightProcessor` step 2, before `EventResolver`:
 
 | # | Condition |
 |---|---|
 | a | Event CLOSED and `peak_score > 0.7` |
 | b | Duration > 180s |
-| c | 2+ overlapping events after `EventResolver` |
-| d | Editor explicit request via API |
+| c | Editor explicit request via API |
+
+**Pass 2 — overlap resolution** (`task: resolve_overlap`), evaluated in `HighlightProcessor` step 4, after `EventResolver` detects ambiguous overlap (similarity 0.3–0.7):
+
+| # | Condition |
+|---|---|
+| d | `EventResolver` returns an ambiguous pair (similarity 0.3–0.7) |
+
+There is no separate trigger for "2+ overlapping events" outside these two passes. Overlap LLM is only called for ambiguous pairs, not for clear merge/trim decisions.
 
 #### Rate limits (spec §5C)
 
@@ -280,21 +291,42 @@ ALTER TABLE highlights ADD COLUMN ai_end_pts REAL;
 
 #### Lifecycle
 
+**Draft creation rule:** Exactly **one** DRAFT row per event. Created once on the **first transition to ACTIVE** (OPENING → ACTIVE), not on every subsequent `peak_score` update. `draft_highlight_id` on `EventCandidate` prevents duplicate inserts.
+
 ```
-ACTIVE + new peak_score
-  → INSERT highlight (type=DRAFT, is_growing=1)
+OPENING → ACTIVE (first time)
+  → INSERT highlight (type=DRAFT, status=PENDING, is_growing=1)
+  → store draft_highlight_id on EventCandidate
   → generate draft clip (full pre_roll, post_roll=0, end=current_pts)
 
-Every 30s while ACTIVE (configurable, default on)
-  → regenerate draft clip with updated end_pts
+While ACTIVE (peak_score may update)
+  → UPDATE same DRAFT row (score, peak_pts) — no new INSERT
+  → regenerate draft clip every 30s (configurable, default on) with updated end_pts
 
 CLOSED
-  → SET is_growing=0 on DRAFT row
+  → SET is_growing=0 on existing DRAFT row
   → StreamWorker runs look_forward (blocking)
   → HighlightProcessor refines boundary
-  → UPGRADE DRAFT → FINAL (or INSERT FINAL with parent_id)
+  → UPGRADE same DRAFT row → FINAL (see upgrade rules below)
   → generate final clip with refined boundaries + full post_roll
 ```
+
+#### DRAFT → FINAL upgrade rules
+
+| Case | Action |
+|---|---|
+| Single event, no split | UPDATE existing DRAFT row: `highlight_type=FINAL`, refined boundaries, final clip path |
+| Event split into micro-highlights | UPDATE DRAFT row to FINAL (parent); INSERT child rows (`parent_id=parent`, `highlight_type=FINAL`) for each micro-highlight |
+| MERGE of two events | Keep DRAFT of higher-score event as FINAL; mark other DRAFT as `status=MERGED` (hidden from queue) |
+
+#### Status vs type (two-axis model)
+
+| Field | Values | Meaning |
+|---|---|---|
+| `highlight_type` | `DRAFT`, `FINAL` | Pipeline processing stage |
+| `status` | `PENDING`, `APPROVED`, `REJECTED`, `ADJUSTED`, `MERGED` | Editor decision |
+
+`EXPORTED` status is out of scope for Phase 2 Beta (no publish workflow yet).
 
 #### ClipGenerator changes
 
@@ -396,7 +428,16 @@ class EventSplitter:
 |---|---|---|---|
 | 0 | 0–60s | Global prior | `global_open * 0.8` (favor recall) |
 | 1 | 60–300s | Hybrid blend | `lerp(phase0, calibrated, weight)` |
-| 2 | 300s+ | Stream calibrated | percentile 80 of composite score |
+| 2 | 300s+ | Stream calibrated | percentile-based (see below) |
+
+**Threshold derivation per tier:**
+
+| Threshold | Phase 0 (0–60s) | Phase 1 (60–300s) | Phase 2 (300s+) |
+|---|---|---|---|
+| `OPEN_THR` | `global_open * 0.8` | `lerp(phase0, p80, weight)` | percentile(composite, 80) |
+| `CONFIRM_THR` | `global_confirm * 0.85` | `lerp(phase0, p90, weight)` | percentile(composite, 90) |
+| `CLOSE_THR` | fixed `0.25` | `lerp(0.25, p30, weight)` | percentile(composite, 30) |
+| `PEAK_THR` | `global_peak * 0.85` | `lerp(phase0, p95, weight)` | percentile(composite, 95) |
 
 ```python
 @dataclass
@@ -454,9 +495,10 @@ CREATE TABLE highlight_feedback (
 
 | Editor action | Feedback recorded |
 |---|---|
-| Approve (no adjust) | `ACCEPT`, deltas = 0 |
-| Reject | `REJECT` + `reject_reason` |
-| Adjust then approve | `MODIFY` or `ACCEPT` with computed deltas |
+| `POST /approve` (no prior adjust) | `ACCEPT`, deltas = 0 |
+| `POST /reject` with `{ "reason": "..." }` | `REJECT` + `reject_reason` |
+| `POST /adjust` then `POST /approve` | `MODIFY` on adjust; `ACCEPT` with deltas on approve |
+| `POST /adjust` alone | `MODIFY` with computed deltas |
 
 **Reject reasons (UI dropdown):** `false_positive`, `wrong_boundary`, `too_short`, `too_long`, `wrong_moment`, `duplicate`, `other`
 
@@ -515,26 +557,47 @@ class StreamManager:
 ### 4.11 HighlightProcessor (Orchestrator)
 
 ```python
+@dataclass
+class ThresholdSet:
+    open_thr: float
+    confirm_thr: float
+    close_thr: float
+    peak_thr: float
+
+@dataclass
+class MicroHighlight:
+    start_pts: float
+    end_pts: float
+    peak_pts: float
+    peak_score: float
+    parent_id: Optional[int] = None
+
 class HighlightProcessor:
     def __init__(self, context_expander, llm_gate, event_resolver,
                  event_splitter, clip_generator, db): ...
+    self.event_history: EventHistoryStore  # deque, max 10 ResolvedEvents
 
     def process_closed_event(
         self,
         event: EventCandidate,
         history: SignalHistoryBuffer,
         transcript: TranscriptBuffer,
-        pending_events: List[ResolvedEvent],
         clip_source: str,
         resolution_pts: float,
     ) -> List[HighlightRecord]:
-        # 1. boundary = context_expander.expand(event, resolution_pts)
-        # 2. if llm_gate.should_call(event, boundary): boundary = llm_gate.refine(boundary)
-        # 3. resolved = event_resolver.resolve(pending_events + [to_resolved(boundary)])
-        # 4. for each resolved: splits = event_splitter.split(e)
-        # 5. generate final clip(s)
-        # 6. upgrade DRAFT → FINAL in DB
+        # 1. boundary = context_expander.expand(event, resolution_pts, self.event_history)
+        # 2. if llm_gate.should_refine_boundary(event, boundary):
+        #        boundary = llm_gate.refine_boundary(boundary)
+        # 3. resolved = event_resolver.resolve([to_resolved(boundary)])
+        # 4. for ambiguous pairs from step 3:
+        #        resolved = llm_gate.resolve_overlap(ambiguous_pair)
+        # 5. for each resolved: splits = event_splitter.split(e)
+        # 6. generate final clip(s)
+        # 7. upgrade DRAFT → FINAL in DB (per upgrade rules §4.4)
+        # 8. self.event_history.append(resolved events)
         ...
+
+    def to_resolved(self, boundary: BoundaryResult, event: EventCandidate) -> ResolvedEvent: ...
 ```
 
 **Look-forward** runs in `StreamWorker` before calling processor (blocking wait on live stream ticks).
@@ -551,7 +614,9 @@ class HighlightProcessor:
 |---|---|---|
 | `GET` | `/api/highlights?type=DRAFT\|FINAL` | Filter by highlight type |
 | `GET` | `/api/highlights?stream_id=X` | Filter by stream |
-| `POST` | `/api/highlights/{id}/reject` | Body: `{ "reason": "false_positive" }` |
+| `POST` | `/api/highlights/{id}/reject` | Body: `{ "reason": "false_positive" }`; writes `highlight_feedback` |
+| `POST` | `/api/highlights/{id}/approve` | Updated: writes `highlight_feedback` on approve |
+| `POST` | `/api/highlights/{id}/adjust` | Updated: writes `highlight_feedback` on adjust |
 | `POST` | `/api/highlights/{id}/llm-analyze` | Editor-triggered LLM analysis |
 | `GET` | `/api/streams` | List active streams |
 | `POST` | `/api/streams/start` | Body: `{ "url", "stream_id" }` |
