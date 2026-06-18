@@ -1,0 +1,12 @@
+{
+  "name": "tiktok_bridge",
+  "version": "1.0.0",
+  "description": "Bridge between TikTok Live and Python stream worker",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "tiktok-live-connector": "^1.2.0"
+  }
+}
