@@ -56,3 +56,19 @@ def test_clip_generator_applies_pts_offset():
     cmd = gen.build_ffmpeg_cmd(event, "out/test.mp4")
     ss_index = cmd.index("-ss")
     assert float(cmd[ss_index + 1]) == pytest.approx(10.0)
+
+
+def test_generate_draft_zero_post_roll():
+    gen = ClipGenerator(source_file="live.mp4", pre_roll=10.0, post_roll=5.0)
+    event = EventCandidate(start_pts=100.0, end_pts=100.0, peak_pts=110.0, peak_score=0.8)
+    cmd = gen.build_draft_cmd(event, end_pts=130.0, output_path="out.mp4")
+    t_index = cmd.index("-t")
+    duration = float(cmd[t_index + 1])
+    assert duration == pytest.approx(40.0)  # (130-100)+pre_roll, no post_roll
+
+
+def test_generate_final_uses_refined_boundaries():
+    gen = ClipGenerator(source_file="live.mp4", pre_roll=10.0, post_roll=5.0)
+    cmd = gen.build_final_cmd(start_pts=95.0, end_pts=145.0, output_path="out.mp4")
+    ss_index = cmd.index("-ss")
+    assert float(cmd[ss_index + 1]) == pytest.approx(85.0)  # 95 - pre_roll

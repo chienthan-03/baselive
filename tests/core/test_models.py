@@ -1,5 +1,12 @@
 import pytest
-from src.core.models import SignalSnapshot, EventCandidate, TranscriptResult, TranscriptSegment
+from src.core.models import (
+    BoundaryResult,
+    EventCandidate,
+    ResolvedEvent,
+    SignalSnapshot,
+    TranscriptResult,
+    TranscriptSegment,
+)
 
 def test_signal_snapshot_initialization():
     snapshot = SignalSnapshot(
@@ -26,6 +33,20 @@ def test_signal_snapshot_extended_fields():
 def test_event_candidate_initialization():
     event = EventCandidate()
     assert event.state == "IDLE"
+
+
+def test_boundary_result_fields():
+    b = BoundaryResult(
+        trigger_pts=90.0, resolution_pts=150.0, peak_pts=120.0,
+        quality="complete", context_status="FULL", stop_reason="silence_gap",
+    )
+    assert b.trigger_pts == 90.0
+
+
+def test_event_candidate_draft_fields():
+    ev = EventCandidate(draft_highlight_id=42, is_growing=True, quality="partial")
+    assert ev.draft_highlight_id == 42
+    assert ev.is_growing is True
 
 def test_transcript_result_structure():
     seg = TranscriptSegment(start=0.0, end=1.2, text="xin chào", confidence=0.92)

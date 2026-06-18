@@ -1,0 +1,9 @@
+{
+  "open_thr": 0.5,
+  "confirm_thr": 0.65,
+  "close_thr": 0.25,
+  "peak_thr": 0.8,
+  "audio_energy_mean": 0.05,
+  "chat_volume_mean": 8.0,
+  "speaking_rate_mean": 3.5
+}

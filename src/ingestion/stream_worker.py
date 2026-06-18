@@ -11,10 +11,15 @@ import numpy as np
 from src.ingestion.stream_recorder import StreamRecorder
 from src.ingestion.chat_collector import ChatCollector
 from src.engine.pipeline import MasterPipeline
+from src.engine.context_expander import ContextExpander
+from src.engine.highlight_processor import HighlightProcessor
 from src.buffer.circular_buffer import AudioRingBuffer, ChatBuffer, TranscriptBuffer
 from src.pipeline.stt_worker import STTWorker
+from src.core.models import EventCandidate
 
 logger = logging.getLogger(__name__)
+
+LOOKFORWARD_TIMEOUT_SEC = 120.0
 
 
 class StreamWorker:
@@ -58,6 +63,99 @@ class StreamWorker:
 
         self._running = False
         self._pts = 0.0
+
+        self.context_expander = ContextExpander()
+        self.highlight_processor = HighlightProcessor(
+            context_expander=self.context_expander,
+            clip_generator=pipeline.clip_generator,
+            db=pipeline.db,
+            state_machine=pipeline.state_machine,
+            stream_id=getattr(pipeline, "stream_id", "default"),
+        )
+        pipeline.highlight_processor = self.highlight_processor
+        pipeline.transcript_buffer = self.transcript_buffer
+
+    def _process_chunk(
+        self,
+        audio_chunk: np.ndarray,
+        chat_items: list,
+        transcript_items: list,
+        clip_source: str,
+    ):
+        return self.pipeline.process_chunk(
+            pts=self._pts,
+            audio_data=audio_chunk,
+            chat_messages=chat_items,
+            transcript=transcript_items or None,
+            clip_source=clip_source,
+        )
+
+    def _blocking_look_forward(
+        self,
+        closed_info,
+        clip_source: str,
+        chat_items: list,
+        transcript_items: list,
+        audio_chunk: np.ndarray,
+        iterations: int,
+    ) -> tuple[float, int]:
+        event = closed_info.event
+        close_pts = closed_info.close_pts
+        peak_pts = event.peak_pts
+        resolution_pts = close_pts
+        deadline_pts = close_pts + LOOKFORWARD_TIMEOUT_SEC
+
+        while self._running:
+            resolution_pts = self.context_expander.look_forward(
+                peak_pts=peak_pts,
+                close_pts=close_pts,
+                history=self.pipeline.signal_history,
+                transcript=self.transcript_buffer,
+            )
+
+            if self._pts >= resolution_pts:
+                break
+            if self._pts >= deadline_pts:
+                resolution_pts = deadline_pts
+                break
+
+            time.sleep(self.chunk_duration_s)
+            self._pts += self.chunk_duration_s
+            iterations += 1
+
+            if self.max_iterations is not None and iterations >= self.max_iterations:
+                break
+
+            audio_chunk = self.audio_buffer.read(
+                start_pts=self._pts, duration_sec=self.chunk_duration_s
+            )
+            if len(audio_chunk) < self.chunk_duration_s * 16000:
+                pad_len = int(self.chunk_duration_s * 16000) - len(audio_chunk)
+                audio_chunk = np.concatenate(
+                    [audio_chunk, np.zeros(pad_len, dtype=np.float32)]
+                )
+
+            chat_items = [
+                i["item"]
+                for i in self.chat_buffer.items
+                if i["pts"] >= self._pts
+            ]
+
+            if self.stt_worker.enabled:
+                transcript_result = self.stt_worker.transcribe_chunk(
+                    audio_chunk, chunk_start_pts=self._pts
+                )
+                self.transcript_buffer.add_item(transcript_result, pts=self._pts)
+
+            transcript_items = [
+                i for i in self.transcript_buffer.items if i["pts"] >= self._pts
+            ]
+
+            self._process_chunk(
+                audio_chunk, chat_items, transcript_items, clip_source
+            )
+
+        return resolution_pts, iterations
 
     def run(self) -> None:
         """Main loop: starts ingestion and feeds chunks to pipeline."""
@@ -118,14 +216,30 @@ class StreamWorker:
                     i for i in self.transcript_buffer.items if i["pts"] >= self._pts
                 ]
 
-                # Process chunk
-                self.pipeline.process_chunk(
-                    pts=self._pts,
-                    audio_data=audio_chunk,
-                    chat_messages=chat_items,
-                    transcript=transcript_items or None,
-                    clip_source=self.recorder.video_path or "",
+                clip_source = self.recorder.video_path or ""
+
+                closed_info = self._process_chunk(
+                    audio_chunk, chat_items, transcript_items, clip_source
                 )
+
+                if closed_info is not None:
+                    resolution_pts, iterations = self._blocking_look_forward(
+                        closed_info,
+                        clip_source,
+                        chat_items,
+                        transcript_items,
+                        audio_chunk,
+                        iterations,
+                    )
+                    self.highlight_processor.on_event_closed(
+                        event=closed_info.event,
+                        history=self.pipeline.signal_history,
+                        transcript=self.transcript_buffer,
+                        clip_source=clip_source,
+                        resolution_pts=resolution_pts,
+                        current_pts=self._pts,
+                    )
+                    self.pipeline.state_machine.current_event = EventCandidate()
 
                 self._pts += self.chunk_duration_s
                 iterations += 1

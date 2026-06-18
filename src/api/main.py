@@ -1,17 +1,13 @@
-from typing import Generator
-from fastapi import FastAPI, APIRouter, Depends, HTTPException
+from typing import Generator, Optional
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import os
 
+from src.core.models import BoundaryResult
 from src.db.database import Database
 from src.engine.llm_gate import LLMGate
-from src.ingestion.stream_manager import (
-    CapacityError,
-    StreamAlreadyRunningError,
-    StreamManager,
-)
 
 # --- Dependency ---
 
@@ -24,11 +20,6 @@ def get_db() -> Generator:
         db.close()
 
 _llm_gate = LLMGate()
-_stream_manager = StreamManager()
-
-
-def get_stream_manager() -> StreamManager:
-    return _stream_manager
 
 # --- Pydantic Schemas ---
 
@@ -38,10 +29,6 @@ class AdjustRequest(BaseModel):
 
 class RejectRequest(BaseModel):
     reason: str
-
-class StartStreamRequest(BaseModel):
-    url: str
-    stream_id: str
 
 def _ai_boundaries(h: dict) -> tuple[float, float]:
     ai_start = h["ai_start_pts"] if h.get("ai_start_pts") is not None else h["start_pts"]
@@ -62,9 +49,13 @@ def serve_dashboard():
     return HTMLResponse(content="<h1>Dashboard is loading...</h1>")
 
 @router.get("/api/highlights")
-def get_highlights(db: Database = Depends(get_db)):
-    """Return all highlights ordered by newest first."""
-    return db.get_highlights()
+def get_highlights(
+    type: Optional[str] = Query(None, description="Filter by highlight type: DRAFT or FINAL"),
+    stream_id: Optional[str] = Query(None, description="Filter by stream ID"),
+    db: Database = Depends(get_db),
+):
+    """Return highlights ordered by newest first, optionally filtered."""
+    return db.get_highlights(type=type, stream_id=stream_id)
 
 @router.post("/api/highlights/{highlight_id}/approve")
 def approve_highlight(highlight_id: int, db: Database = Depends(get_db)):
@@ -72,15 +63,46 @@ def approve_highlight(highlight_id: int, db: Database = Depends(get_db)):
     h = db.get_highlight(highlight_id)
     if not h:
         raise HTTPException(status_code=404, detail="Highlight not found")
+    ai_start, ai_end = _ai_boundaries(h)
+    db.insert_feedback(
+        highlight_id=highlight_id,
+        stream_id=h["stream_id"],
+        action="ACCEPT",
+        ai_start_pts=ai_start,
+        ai_end_pts=ai_end,
+        ai_score=h["score"],
+        editor_start_pts=h["start_pts"],
+        editor_end_pts=h["end_pts"],
+        start_delta_sec=0.0,
+        end_delta_sec=0.0,
+        content_type=h.get("content_type"),
+    )
     db.update_status(highlight_id, "APPROVED")
     return {"id": highlight_id, "status": "APPROVED"}
 
 @router.post("/api/highlights/{highlight_id}/reject")
-def reject_highlight(highlight_id: int, db: Database = Depends(get_db)):
+def reject_highlight(
+    highlight_id: int,
+    body: RejectRequest,
+    db: Database = Depends(get_db),
+):
     """Mark a highlight as REJECTED."""
     h = db.get_highlight(highlight_id)
     if not h:
         raise HTTPException(status_code=404, detail="Highlight not found")
+    ai_start, ai_end = _ai_boundaries(h)
+    db.insert_feedback(
+        highlight_id=highlight_id,
+        stream_id=h["stream_id"],
+        action="REJECT",
+        ai_start_pts=ai_start,
+        ai_end_pts=ai_end,
+        ai_score=h["score"],
+        editor_start_pts=h["start_pts"],
+        editor_end_pts=h["end_pts"],
+        reject_reason=body.reason,
+        content_type=h.get("content_type"),
+    )
     db.update_status(highlight_id, "REJECTED")
     return {"id": highlight_id, "status": "REJECTED"}
 
@@ -90,6 +112,22 @@ def adjust_highlight(highlight_id: int, body: AdjustRequest, db: Database = Depe
     h = db.get_highlight(highlight_id)
     if not h:
         raise HTTPException(status_code=404, detail="Highlight not found")
+    ai_start, ai_end = _ai_boundaries(h)
+    start_delta = body.start_pts - ai_start
+    end_delta = body.end_pts - ai_end
+    db.insert_feedback(
+        highlight_id=highlight_id,
+        stream_id=h["stream_id"],
+        action="MODIFY",
+        ai_start_pts=ai_start,
+        ai_end_pts=ai_end,
+        ai_score=h["score"],
+        editor_start_pts=body.start_pts,
+        editor_end_pts=body.end_pts,
+        start_delta_sec=start_delta,
+        end_delta_sec=end_delta,
+        content_type=h.get("content_type"),
+    )
     db.update_boundaries(highlight_id, body.start_pts, body.end_pts)
     db.update_status(highlight_id, "ADJUSTED")
     return {"id": highlight_id, "status": "ADJUSTED"}
@@ -131,37 +169,6 @@ def llm_analyze_highlight(highlight_id: int, db: Database = Depends(get_db)):
         "confidence": result.confidence,
         "reasoning": result.reasoning,
     }
-
-@router.get("/api/streams")
-def list_streams(mgr: StreamManager = Depends(get_stream_manager)):
-    """Return metadata for all active stream workers."""
-    return mgr.list_streams()
-
-@router.post("/api/streams/start")
-def start_stream(
-    body: StartStreamRequest,
-    mgr: StreamManager = Depends(get_stream_manager),
-):
-    """Start ingesting a new livestream."""
-    try:
-        mgr.start_stream(body.url, body.stream_id)
-    except CapacityError:
-        raise HTTPException(status_code=429, detail="Maximum concurrent streams reached")
-    except StreamAlreadyRunningError:
-        raise HTTPException(status_code=409, detail="Stream already running")
-    return {"stream_id": body.stream_id, "status": "started"}
-
-@router.post("/api/streams/{stream_id}/stop")
-def stop_stream(
-    stream_id: str,
-    mgr: StreamManager = Depends(get_stream_manager),
-):
-    """Stop an active stream worker."""
-    try:
-        mgr.stop_stream(stream_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Stream not found")
-    return {"stream_id": stream_id, "status": "stopped"}
 
 # --- Application factory ---
 

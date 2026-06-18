@@ -1,29 +1,19 @@
 import pytest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 
-from src.api.main import app, get_db, get_stream_manager
+from src.api.main import app, get_db
 from src.db.database import Database
 from src.engine.llm_gate import LLMRefineResult
-from src.ingestion.stream_manager import StreamManager
 
-# Single in-memory DB instance shared across all tests
-_test_db = Database(":memory:")
-_test_db.init_db()
-_test_db.insert_highlight(
-    stream_id="test_stream",
-    start_pts=10.0,
-    end_pts=20.0,
-    score=0.9,
-    clip_path="dummy.mp4",
-    status="PENDING",
-    reason="high energy"
-)
 
-def override_get_db():
-    yield _test_db
+@pytest.fixture
+def test_db():
+    db = Database(":memory:")
+    db.init_db()
+    yield db
+    db.close()
 
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app)
 
 @pytest.fixture
 def client(test_db):
@@ -34,47 +24,6 @@ def client(test_db):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def stream_client(test_db):
-    import threading
-    import time
-
-    class _FakeWorker:
-        def __init__(self, url: str, stream_id: str):
-            self.url = url
-            self.username = stream_id
-            self._running = False
-            self._stop_event = threading.Event()
-
-        def run(self) -> None:
-            self._running = True
-            while not self._stop_event.is_set():
-                time.sleep(0.01)
-
-        def stop(self) -> None:
-            self._running = False
-            self._stop_event.set()
-
-    mgr = StreamManager(worker_factory=lambda url, sid: _FakeWorker(url, sid))
-
-    def override_get_db():
-        yield test_db
-
-    def override_get_stream_manager():
-        return mgr
-
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_stream_manager] = override_get_stream_manager
-    with TestClient(app) as c:
-        yield c, mgr
-    app.dependency_overrides.clear()
-    for stream_id in mgr.list_active():
-        try:
-            mgr.stop_stream(stream_id)
-        except KeyError:
-            pass
 
 
 @pytest.fixture
@@ -126,7 +75,33 @@ def test_get_highlights(client, test_db):
     assert data[0]["stream_id"] == "test_stream"
     assert data[0]["status"] == "PENDING"
 
-def test_approve_highlight():
+
+def test_get_highlights_filter_by_type(client, db_with_highlights):
+    resp = client.get("/api/highlights?type=DRAFT")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 2
+    assert all(h["highlight_type"] == "DRAFT" for h in data)
+
+
+def test_get_highlights_filter_by_stream_id(client, db_with_highlights):
+    resp = client.get("/api/highlights?stream_id=stream_a")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 2
+    assert all(h["stream_id"] == "stream_a" for h in data)
+
+
+def test_approve_highlight(client, test_db):
+    test_db.insert_highlight(
+        stream_id="test_stream",
+        start_pts=10.0,
+        end_pts=20.0,
+        score=0.9,
+        clip_path="dummy.mp4",
+        status="PENDING",
+        reason="high energy",
+    )
     response = client.post("/api/highlights/1/approve")
     assert response.status_code == 200
     assert response.json()["status"] == "APPROVED"
@@ -135,12 +110,69 @@ def test_approve_highlight():
     data = response.json()
     assert data[0]["status"] == "APPROVED"
 
-def test_reject_highlight():
-    response = client.post("/api/highlights/1/reject")
+
+def test_reject_highlight(client, test_db):
+    test_db.insert_highlight(
+        stream_id="test_stream",
+        start_pts=10.0,
+        end_pts=20.0,
+        score=0.9,
+        clip_path="dummy.mp4",
+        status="PENDING",
+        reason="high energy",
+    )
+    response = client.post("/api/highlights/1/reject", json={"reason": "other"})
     assert response.status_code == 200
     assert response.json()["status"] == "REJECTED"
 
-def test_adjust_highlight_boundaries():
+
+def test_reject_with_reason_writes_feedback(client, test_db):
+    hid = test_db.insert_highlight(
+        stream_id="test_stream",
+        start_pts=10.0,
+        end_pts=20.0,
+        score=0.9,
+        clip_path="dummy.mp4",
+        status="PENDING",
+        reason="high energy",
+    )
+    resp = client.post(f"/api/highlights/{hid}/reject", json={"reason": "false_positive"})
+    assert resp.status_code == 200
+    feedback = test_db.get_feedback_for_highlight(hid)
+    assert feedback[0]["action"] == "REJECT"
+    assert feedback[0]["reject_reason"] == "false_positive"
+
+
+def test_approve_writes_accept_feedback(client, test_db):
+    hid = test_db.insert_highlight(
+        stream_id="test_stream",
+        start_pts=10.0,
+        end_pts=20.0,
+        score=0.9,
+        clip_path="dummy.mp4",
+        status="PENDING",
+        reason="high energy",
+        ai_start_pts=10.0,
+        ai_end_pts=20.0,
+    )
+    resp = client.post(f"/api/highlights/{hid}/approve")
+    assert resp.status_code == 200
+    feedback = test_db.get_feedback_for_highlight(hid)
+    assert feedback[0]["action"] == "ACCEPT"
+    assert feedback[0]["start_delta_sec"] == 0
+    assert feedback[0]["end_delta_sec"] == 0
+
+
+def test_adjust_highlight_boundaries(client, test_db):
+    test_db.insert_highlight(
+        stream_id="test_stream",
+        start_pts=10.0,
+        end_pts=20.0,
+        score=0.9,
+        clip_path="dummy.mp4",
+        status="PENDING",
+        reason="high energy",
+    )
     payload = {"start_pts": 12.0, "end_pts": 18.0}
     response = client.post("/api/highlights/1/adjust", json=payload)
     assert response.status_code == 200
@@ -169,28 +201,3 @@ def test_llm_analyze_endpoint(client, db_with_highlights):
         assert body["refined_end_pts"] == 22.0
         mock_gate.refine_boundary.assert_called_once()
         assert mock_gate.refine_boundary.call_args.kwargs.get("force") is True
-
-
-def test_api_start_stream(stream_client):
-    client, _ = stream_client
-    resp = client.post("/api/streams/start", json={"url": "http://test", "stream_id": "s1"})
-    assert resp.status_code == 200
-    assert resp.json()["stream_id"] == "s1"
-
-
-def test_api_list_and_stop_stream(stream_client):
-    client, _ = stream_client
-    client.post("/api/streams/start", json={"url": "http://test", "stream_id": "s1"})
-    resp = client.get("/api/streams")
-    assert resp.status_code == 200
-    assert "s1" in [s["stream_id"] for s in resp.json()]
-    resp = client.post("/api/streams/s1/stop")
-    assert resp.status_code == 200
-
-
-def test_api_start_stream_429_at_capacity(stream_client):
-    client, _ = stream_client
-    for i in range(3):
-        client.post("/api/streams/start", json={"url": f"http://test{i}", "stream_id": f"s{i}"})
-    resp = client.post("/api/streams/start", json={"url": "http://test4", "stream_id": "s4"})
-    assert resp.status_code == 429
