@@ -4,16 +4,19 @@ from typing import Dict
 from src.core.models import SignalSnapshot
 
 WEIGHTS: Dict[str, float] = {
-    "energy": 0.25,
-    "laughter": 0.20,
-    "chat_volume": 0.15,
-    "speaking_rate": 0.15,
-    "pitch": 0.10,
-    "emoji_dominant": 0.10,
+    "energy": 0.22,
+    "laughter": 0.18,
+    "chat_volume": 0.14,
+    "speaking_rate": 0.13,
+    "pitch": 0.09,
+    "emoji_dominant": 0.09,
     "overlap": 0.05,
+    "video_scene_change": 0.05,
+    "video_motion": 0.05,
 }
 
 STT_COMPONENTS = {"speaking_rate"}
+VIDEO_COMPONENTS = {"video_scene_change", "video_motion"}
 
 
 class SignalAggregator:
@@ -22,10 +25,12 @@ class SignalAggregator:
         window_size: int = 60,
         big_gift_threshold: float = 100,
         stt_enabled: bool = True,
+        video_enabled: bool = True,
     ):
         self.window_size = window_size
         self.big_gift_threshold = big_gift_threshold
         self.stt_enabled = stt_enabled
+        self.video_enabled = video_enabled
         self._history = {
             component: deque(maxlen=window_size) for component in WEIGHTS
         }
@@ -53,16 +58,25 @@ class SignalAggregator:
 
     def _effective_weights(self) -> Dict[str, float]:
         weights = WEIGHTS.copy()
+        disabled_total = 0.0
+
         if not self.stt_enabled:
-            disabled_total = sum(weights[c] for c in STT_COMPONENTS)
             for component in STT_COMPONENTS:
+                disabled_total += weights[component]
                 weights[component] = 0.0
-            enabled_total = sum(weights.values())
-            if enabled_total > 0:
-                scale = (enabled_total + disabled_total) / enabled_total
-                for component in weights:
-                    if weights[component] > 0:
-                        weights[component] *= scale
+
+        if not self.video_enabled:
+            for component in VIDEO_COMPONENTS:
+                disabled_total += weights[component]
+                weights[component] = 0.0
+
+        enabled_total = sum(weights.values())
+        if enabled_total > 0 and disabled_total > 0:
+            scale = (enabled_total + disabled_total) / enabled_total
+            for component in weights:
+                if weights[component] > 0:
+                    weights[component] *= scale
+
         return weights
 
     def compute_score(self, snapshot: SignalSnapshot) -> float:
@@ -74,6 +88,8 @@ class SignalAggregator:
             "pitch": snapshot.pitch_deviation,
             "emoji_dominant": self._emoji_dominant(snapshot),
             "overlap": snapshot.speaker_overlap,
+            "video_scene_change": snapshot.video_scene_change,
+            "video_motion": snapshot.video_motion,
         }
 
         weights = self._effective_weights()

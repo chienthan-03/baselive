@@ -27,6 +27,10 @@ class SignalSnapshot:
     chat_keyword_cluster: Optional[str] = None
     gift_event: Optional[Dict] = None
 
+    # Video signals
+    video_scene_change: float = 0.0
+    video_motion: float = 0.0
+
     # Aggregate
     composite_score: float = 0.0
 

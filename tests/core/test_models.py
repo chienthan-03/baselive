@@ -30,6 +30,12 @@ def test_signal_snapshot_extended_fields():
     assert snapshot.chat_emoji_scores["funny"] == 0.7
 
 
+def test_signal_snapshot_video_fields_default_zero():
+    s = SignalSnapshot(pts=0.0)
+    assert s.video_scene_change == 0.0
+    assert s.video_motion == 0.0
+
+
 def test_event_candidate_initialization():
     event = EventCandidate()
     assert event.state == "IDLE"

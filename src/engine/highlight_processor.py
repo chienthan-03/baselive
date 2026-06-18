@@ -32,6 +32,7 @@ class HighlightProcessor:
         event_resolver: Optional[EventResolver] = None,
         event_splitter: Optional[EventSplitter] = None,
         stream_id: str = "default",
+        metrics=None,
     ):
         self.context_expander = context_expander
         self.clip_generator = clip_generator
@@ -41,8 +42,17 @@ class HighlightProcessor:
         self.event_resolver = event_resolver or EventResolver()
         self.event_splitter = event_splitter or EventSplitter()
         self.stream_id = stream_id
+        self._metrics = metrics
         self.event_history = EventHistoryStore()
         self.pending_queue = PendingEventQueue()
+
+    def record_highlight_created(self, highlight_type: str) -> None:
+        if self._metrics is None:
+            return
+        try:
+            self._metrics.inc_highlight(highlight_type)
+        except Exception:
+            pass
 
     def on_event_closed(
         self,
@@ -218,6 +228,7 @@ class HighlightProcessor:
                 clip_path="",
                 quality="complete",
             )
+            self.record_highlight_created("FINAL")
             parent_record = self.db.get_highlight(parent_id)
             if parent_record is not None:
                 records.append(parent_record)
@@ -239,6 +250,7 @@ class HighlightProcessor:
                 child_record = self.db.get_highlight(child_id)
                 if child_record is not None:
                     records.append(child_record)
+                    self.record_highlight_created("FINAL")
 
         self._mark_merged_drafts(resolved)
         self.event_history.append(resolved)
@@ -271,6 +283,7 @@ class HighlightProcessor:
             self._mark_merged_drafts(resolved)
             record = self.db.get_highlight(resolved.draft_highlight_id)
             if record is not None:
+                self.record_highlight_created("FINAL")
                 return record
 
         return {

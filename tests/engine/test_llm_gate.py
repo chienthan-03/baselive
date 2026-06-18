@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -142,3 +142,16 @@ def test_resolve_overlap_returns_decision(mock_openrouter):
     result = gate.resolve_overlap(pair)
     assert result is not None
     assert result.decision == "MERGE"
+
+
+def test_llm_gate_respects_budget(mock_openrouter, boundary):
+    mock_budget = MagicMock()
+    mock_budget.can_call.return_value = False
+    gate = LLMGate(api_key="test-key", budget_tracker=mock_budget)
+    result = gate.refine_boundary(
+        boundary,
+        transcript="test",
+        signals_summary={},
+    )
+    assert result is None
+    mock_openrouter.assert_not_called()

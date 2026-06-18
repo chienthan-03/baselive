@@ -59,6 +59,9 @@ const dom = {
 
     detailContentType:  $('detail-content-type'),
     qualityWarnings:    $('quality-warnings'),
+
+    healthDot:          $('health-status-dot'),
+    healthLabel:        $('health-status-label'),
 };
 
 // ── API helpers ────────────────────────────────────────────────────────
@@ -96,6 +99,11 @@ const api = {
         });
         if (!res.ok) throw new Error('Failed to adjust');
         return res.json();
+    },
+    async getHealthReady() {
+        const res = await fetch('/api/health/ready');
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok, status: data.status, ready: data.ready };
     },
 };
 
@@ -431,9 +439,48 @@ async function refreshData() {
     }
 }
 
+// ── Health status dot ──────────────────────────────────────────────────
+function setHealthStatus(mode) {
+    const dot = dom.healthDot;
+    const label = dom.healthLabel;
+    if (!dot || !label) return;
+
+    dot.className = 'status-dot';
+    if (mode === 'ok') {
+        dot.classList.add('status-dot--ok');
+        dot.setAttribute('aria-label', 'Trạng thái hệ thống: sẵn sàng');
+        label.textContent = 'Hệ thống sẵn sàng';
+    } else if (mode === 'degraded') {
+        dot.classList.add('status-dot--degraded');
+        dot.setAttribute('aria-label', 'Trạng thái hệ thống: suy giảm');
+        label.textContent = 'Hệ thống suy giảm';
+    } else {
+        dot.classList.add('status-dot--error');
+        dot.setAttribute('aria-label', 'Trạng thái hệ thống: không phản hồi');
+        label.textContent = 'Không phản hồi';
+    }
+}
+
+async function refreshHealth() {
+    try {
+        const { ok, status } = await api.getHealthReady();
+        if (ok && status === 'ok') {
+            setHealthStatus('ok');
+        } else if (status === 'degraded') {
+            setHealthStatus('degraded');
+        } else {
+            setHealthStatus('error');
+        }
+    } catch (e) {
+        console.error('Health check error:', e);
+        setHealthStatus('error');
+    }
+}
+
 // ── Polling (every 8 seconds) ──────────────────────────────────────────
 function startPolling() {
     state.polling = setInterval(async () => {
+        await refreshHealth();
         await refreshStreams();
         await refreshData();
     }, 8000);
@@ -441,6 +488,7 @@ function startPolling() {
 
 // ── Init ───────────────────────────────────────────────────────────────
 (async () => {
+    await refreshHealth();
     await refreshStreams();
     await refreshData();
     startPolling();

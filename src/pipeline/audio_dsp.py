@@ -105,7 +105,7 @@ class AudioAnalyzer:
             return 0.0
         return float(min(1.0, np.var(energies) * 50.0))
 
-    def analyze_chunk(self, audio: np.ndarray) -> dict:
+    def analyze_chunk(self, audio: np.ndarray, run_full_dsp: bool = True) -> dict:
         current_energy = self._compute_rms(audio)
 
         is_spike = current_energy > (self.baseline_energy * 3)
@@ -118,12 +118,15 @@ class AudioAnalyzer:
 
         score = min(1.0, current_energy / 1.0)
 
+        pitch_deviation = self._pitch_deviation(audio) if run_full_dsp else 0.0
+        laughter_prob = self._detect_laughter(audio) if run_full_dsp else 0.0
+
         return {
             "energy_score": score,
             "energy_spike": is_spike,
             "raw_rms": current_energy,
             "silence_before": self.silence_duration,
-            "pitch_deviation": self._pitch_deviation(audio),
-            "laughter_prob": self._detect_laughter(audio),
+            "pitch_deviation": pitch_deviation,
+            "laughter_prob": laughter_prob,
             "speaker_overlap": self._estimate_overlap(audio),
         }

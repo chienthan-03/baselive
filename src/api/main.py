@@ -1,13 +1,22 @@
-from typing import Generator, Optional
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 import os
+from typing import Generator, Optional
+
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from src.core.models import BoundaryResult
 from src.db.database import Database
+from src.observability import health as health_mod
 from src.engine.llm_gate import LLMGate
+from src.ingestion.orchestrator import (
+    OrchestratorService,
+    PlatformNotSupportedError,
+    StreamAlreadyRunningError,
+)
+from src.ingestion.stream_manager import StreamManager
+from src.ingestion.worker_node import CapacityError
 
 # --- Dependency ---
 
@@ -20,6 +29,24 @@ def get_db() -> Generator:
         db.close()
 
 _llm_gate = LLMGate()
+_orchestrator = OrchestratorService()
+_stream_manager = StreamManager(orchestrator=_orchestrator)
+
+
+def get_orchestrator() -> OrchestratorService:
+    return _orchestrator
+
+
+def get_stream_manager() -> StreamManager:
+    return _stream_manager
+
+
+def _check_db_ok(db: Database) -> bool:
+    try:
+        db.conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
 
 # --- Pydantic Schemas ---
 
@@ -29,6 +56,11 @@ class AdjustRequest(BaseModel):
 
 class RejectRequest(BaseModel):
     reason: str
+
+class StartStreamRequest(BaseModel):
+    url: str
+    stream_id: str
+    platform: str = "tiktok"
 
 def _ai_boundaries(h: dict) -> tuple[float, float]:
     ai_start = h["ai_start_pts"] if h.get("ai_start_pts") is not None else h["start_pts"]
@@ -148,6 +180,9 @@ def llm_analyze_highlight(highlight_id: int, db: Database = Depends(get_db)):
         stop_reason="editor_request",
     )
 
+    if not _llm_gate.budget_tracker.can_call():
+        raise HTTPException(status_code=503, detail="LLM daily budget exceeded")
+
     result = _llm_gate.refine_boundary(
         boundary,
         transcript=h.get("reason") or "",
@@ -157,6 +192,7 @@ def llm_analyze_highlight(highlight_id: int, db: Database = Depends(get_db)):
             "keywords": [],
         },
         force=True,
+        gate="editor",
     )
 
     if result is None:
@@ -169,6 +205,89 @@ def llm_analyze_highlight(highlight_id: int, db: Database = Depends(get_db)):
         "confidence": result.confidence,
         "reasoning": result.reasoning,
     }
+
+@router.get("/metrics")
+def metrics():
+    try:
+        from src.observability.metrics import MetricsCollector
+
+        text = MetricsCollector.get_instance().export_text()
+    except ImportError:
+        return Response(
+            content="Metrics unavailable",
+            status_code=503,
+            media_type="text/plain",
+        )
+    return Response(content=text, media_type="text/plain")
+
+
+@router.get("/api/health")
+def health_liveness():
+    return health_mod.check_liveness()
+
+
+@router.get("/api/health/ready")
+def health_readiness(
+    db: Database = Depends(get_db),
+    orch: OrchestratorService = Depends(get_orchestrator),
+):
+    db_ok = _check_db_ok(db)
+    nodes = orch.get_node_health()
+    result = health_mod.check_readiness(db_ok=db_ok, nodes=nodes)
+    if not result["ready"]:
+        return JSONResponse(status_code=503, content=result)
+    return result
+
+
+@router.get("/api/platforms")
+def list_platforms(orch: OrchestratorService = Depends(get_orchestrator)):
+    """Return registered platforms and availability."""
+    return orch.list_platforms()
+
+
+@router.get("/api/streams")
+def list_streams(orch: OrchestratorService = Depends(get_orchestrator)):
+    """Return metadata for all active stream workers."""
+    return [
+        {**stream, "running": stream.get("status") == "RUNNING"}
+        for stream in orch.list_streams()
+    ]
+
+
+@router.get("/api/streams/interrupted")
+def list_interrupted_streams(orch: OrchestratorService = Depends(get_orchestrator)):
+    """Return streams marked INTERRUPTED after crash recovery."""
+    return orch.list_interrupted()
+
+
+@router.post("/api/streams/start")
+def start_stream(
+    body: StartStreamRequest,
+    orch: OrchestratorService = Depends(get_orchestrator),
+):
+    """Start ingesting a new livestream."""
+    try:
+        orch.start_stream(body.url, body.stream_id, platform=body.platform)
+    except CapacityError:
+        raise HTTPException(status_code=429, detail="Maximum concurrent streams reached")
+    except StreamAlreadyRunningError:
+        raise HTTPException(status_code=409, detail="Stream already running")
+    except PlatformNotSupportedError:
+        raise HTTPException(status_code=501, detail="Platform not supported")
+    return {"stream_id": body.stream_id, "status": "started"}
+
+
+@router.post("/api/streams/{stream_id}/stop")
+def stop_stream(
+    stream_id: str,
+    orch: OrchestratorService = Depends(get_orchestrator),
+):
+    """Stop an active stream worker."""
+    try:
+        orch.stop_stream(stream_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    return {"stream_id": stream_id, "status": "stopped"}
 
 # --- Application factory ---
 

@@ -12,8 +12,8 @@ from src.db.database import Database
 def _make_worker_patches():
   return (
       patch("src.ingestion.stream_worker.STTWorker"),
-      patch("src.ingestion.stream_worker.StreamRecorder"),
-      patch("src.ingestion.stream_worker.ChatCollector"),
+      patch("src.ingestion.platforms.tiktok.StreamRecorder"),
+      patch("src.ingestion.platforms.tiktok.ChatCollector"),
       patch("src.ingestion.stream_worker.time.sleep"),
       patch("src.engine.clip_generator.ClipGenerator.generate_final", return_value="/tmp/final.mp4"),
   )

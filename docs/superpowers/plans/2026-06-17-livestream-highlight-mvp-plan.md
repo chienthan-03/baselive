@@ -294,3 +294,28 @@ cd c:\Publish\base-live
 .\venv\Scripts\python.exe -m uvicorn src.api.main:app --reload --port 8000
 # → http://localhost:8000
 ```
+
+---
+
+## Phase 3: Production ✅ DONE
+
+**Goal:** Observability, worker pool orchestration, multi-platform adapters, CPU video analysis, cost optimization, backup & dashboard health.
+
+**Plan:** [2026-06-18-phase-3-production-plan.md](2026-06-18-phase-3-production-plan.md)
+
+| Sub-phase | Nội dung | Status |
+|-----------|----------|--------|
+| 3a | MetricsCollector, health endpoints, `/metrics`, Grafana dashboard, structured logging | ✅ |
+| 3c | streams table, StreamRegistry, WorkerNode, OrchestratorService, API wiring, metrics call sites | ✅ |
+| 3b | PlatformAdapter ABC, TikTok/YouTube/Facebook adapters, StreamWorker wiring | ✅ |
+| 3d | VideoAnalyzer (CPU), pipeline + aggregator video signals, StreamWorker frame sampling | ✅ |
+| 3e | LLMBudgetTracker, selective DSP, `llm_calls_total` metric | ✅ |
+| 3f | backup_daily job, dashboard health status dot, MVP plan update | ✅ |
+
+**Tests:** 165/165 passing (full suite)
+
+### Khởi chạy backup hàng ngày
+
+```powershell
+python -m src.jobs.backup_daily
+```

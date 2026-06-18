@@ -2,9 +2,11 @@ import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
-from src.api.main import app, get_db
+from src.api.main import app, get_db, get_orchestrator, get_stream_manager
 from src.db.database import Database
 from src.engine.llm_gate import LLMRefineResult
+from src.ingestion.orchestrator import OrchestratorService
+from src.ingestion.stream_manager import StreamManager
 
 
 @pytest.fixture
@@ -24,6 +26,56 @@ def client(test_db):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def stream_client(test_db):
+    import threading
+    import time
+
+    class _FakeWorker:
+        def __init__(self, url: str, stream_id: str):
+            self.url = url
+            self.username = stream_id
+            self._running = False
+            self._stop_event = threading.Event()
+
+        def run(self) -> None:
+            self._running = True
+            while not self._stop_event.is_set():
+                time.sleep(0.01)
+
+        def stop(self) -> None:
+            self._running = False
+            self._stop_event.set()
+
+    orch = OrchestratorService(
+        worker_factory=lambda url, sid: _FakeWorker(url, sid),
+        db_path=":memory:",
+        max_streams_per_node=3,
+    )
+    mgr = StreamManager(orchestrator=orch)
+
+    def override_get_db():
+        yield test_db
+
+    def override_get_orchestrator():
+        return orch
+
+    def override_get_stream_manager():
+        return mgr
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_orchestrator] = override_get_orchestrator
+    app.dependency_overrides[get_stream_manager] = override_get_stream_manager
+    with TestClient(app) as c:
+        yield c, orch
+    app.dependency_overrides.clear()
+    for stream_id in orch.list_active():
+        try:
+            orch.stop_stream(stream_id)
+        except KeyError:
+            pass
 
 
 @pytest.fixture
@@ -193,6 +245,7 @@ def test_llm_analyze_endpoint(client, db_with_highlights):
         reasoning="adjusted start",
     )
     with patch("src.api.main._llm_gate") as mock_gate:
+        mock_gate.budget_tracker.can_call.return_value = True
         mock_gate.refine_boundary.return_value = mock_result
         resp = client.post("/api/highlights/1/llm-analyze")
         assert resp.status_code == 200
@@ -201,3 +254,100 @@ def test_llm_analyze_endpoint(client, db_with_highlights):
         assert body["refined_end_pts"] == 22.0
         mock_gate.refine_boundary.assert_called_once()
         assert mock_gate.refine_boundary.call_args.kwargs.get("force") is True
+        assert mock_gate.refine_boundary.call_args.kwargs.get("gate") == "editor"
+
+
+def test_editor_llm_analyze_counts_against_budget(client, db_with_highlights):
+    with patch("src.api.main._llm_gate") as mock_gate:
+        mock_gate.budget_tracker.can_call.return_value = False
+        resp = client.post("/api/highlights/1/llm-analyze")
+        assert resp.status_code == 503
+        mock_gate.refine_boundary.assert_not_called()
+
+
+def test_api_start_stream(stream_client):
+    client, _ = stream_client
+    resp = client.post("/api/streams/start", json={"url": "http://test", "stream_id": "s1"})
+    assert resp.status_code == 200
+    assert resp.json()["stream_id"] == "s1"
+
+
+def test_api_list_and_stop_stream(stream_client):
+    client, _ = stream_client
+    client.post("/api/streams/start", json={"url": "http://test", "stream_id": "s1"})
+    resp = client.get("/api/streams")
+    assert resp.status_code == 200
+    assert "s1" in [s["stream_id"] for s in resp.json()]
+    resp = client.post("/api/streams/s1/stop")
+    assert resp.status_code == 200
+
+
+def test_api_start_stream_409_duplicate(stream_client):
+    client, _ = stream_client
+    client.post("/api/streams/start", json={"url": "http://test", "stream_id": "s1"})
+    resp = client.post(
+        "/api/streams/start",
+        json={"url": "http://other", "stream_id": "s1"},
+    )
+    assert resp.status_code == 409
+
+
+def test_api_start_stream_429_at_capacity(stream_client):
+    client, _ = stream_client
+    for i in range(3):
+        client.post("/api/streams/start", json={"url": f"http://test{i}", "stream_id": f"s{i}"})
+    resp = client.post("/api/streams/start", json={"url": "http://test4", "stream_id": "s4"})
+    assert resp.status_code == 429
+
+
+def test_api_start_stream_501_non_tiktok_platform(stream_client):
+    client, _ = stream_client
+    resp = client.post(
+        "/api/streams/start",
+        json={"url": "http://yt", "stream_id": "s1", "platform": "youtube"},
+    )
+    assert resp.status_code == 501
+
+
+def test_api_list_platforms(stream_client):
+    client, _ = stream_client
+    resp = client.get("/api/platforms")
+    assert resp.status_code == 200
+    platforms = resp.json()
+    ids = {p["id"] for p in platforms}
+    assert "tiktok" in ids
+    assert "youtube" in ids
+    assert "facebook" in ids
+    by_id = {p["id"]: p for p in platforms}
+    assert by_id["tiktok"]["available"] is True
+    assert by_id["youtube"]["available"] is False
+    assert by_id["facebook"]["available"] is False
+
+
+def test_health_liveness(client):
+    resp = client.get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+def test_metrics_endpoint(client):
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "streams_active" in resp.text or "# HELP" in resp.text
+
+
+def test_health_ready_503_when_stale(stream_client, monkeypatch):
+    client, orch = stream_client
+    monkeypatch.setattr(
+        orch._worker_node,
+        "heartbeat",
+        lambda: {
+            "node_id": "node-0",
+            "healthy": True,
+            "last_heartbeat_ts": 0.0,
+            "active_count": 0,
+            "stream_ids": [],
+        },
+    )
+    resp = client.get("/api/health/ready")
+    assert resp.status_code == 503

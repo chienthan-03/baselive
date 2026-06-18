@@ -154,3 +154,19 @@ def test_pipeline_sets_is_growing_false_on_closed(mock_db):
         score=pytest.approx(0.9),
         peak_pts=pytest.approx(8.0),
     )
+
+
+def test_pipeline_copies_video_signals_to_snapshot():
+    pipeline = MasterPipeline()
+    audio = np.random.normal(0, 0.8, 16000 * 5).astype(np.float32)
+    pipeline.process_chunk(
+        pts=10.0,
+        audio_data=audio,
+        chat_messages=[],
+        video_signals={"video_scene_change": 0.8, "video_motion": 0.5},
+    )
+    entries = pipeline.signal_history.get_range(0.0, 100.0)
+    assert entries
+    snapshot = entries[-1].snapshot
+    assert snapshot.video_scene_change == pytest.approx(0.8)
+    assert snapshot.video_motion == pytest.approx(0.5)

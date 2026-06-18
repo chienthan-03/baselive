@@ -1,0 +1,4 @@
+{
+  "max_streams_per_node": 5,
+  "heartbeat_interval_sec": 30
+}

@@ -15,6 +15,8 @@ def _make_mock_pipeline() -> MagicMock:
     pipeline.state_machine = MagicMock()
     pipeline.clip_generator = MagicMock()
     pipeline.db = MagicMock()
+    pipeline.audio_analyzer = MagicMock()
+    pipeline.audio_analyzer._compute_rms.return_value = 0.5
     return pipeline
 
 
@@ -29,8 +31,8 @@ def test_stream_worker_calls_pipeline_process_chunk():
     pipeline = _make_mock_pipeline()
 
     with _patch_stt(), \
-         patch("src.ingestion.stream_worker.StreamRecorder") as MockRecorder, \
-         patch("src.ingestion.stream_worker.ChatCollector") as MockCollector:
+         patch("src.ingestion.platforms.tiktok.StreamRecorder") as MockRecorder, \
+         patch("src.ingestion.platforms.tiktok.ChatCollector") as MockCollector:
 
 
         mock_recorder = MagicMock()
@@ -61,8 +63,8 @@ def test_stream_worker_reconnects_on_recorder_failure():
     pipeline = _make_mock_pipeline()
 
     with _patch_stt(), \
-         patch("src.ingestion.stream_worker.StreamRecorder") as MockRecorder, \
-         patch("src.ingestion.stream_worker.ChatCollector") as MockCollector, \
+         patch("src.ingestion.platforms.tiktok.StreamRecorder") as MockRecorder, \
+         patch("src.ingestion.platforms.tiktok.ChatCollector") as MockCollector, \
          patch("src.ingestion.stream_worker.time.sleep"):  # no real sleeping
 
         mock_recorder = MagicMock()
@@ -101,8 +103,8 @@ def test_stream_worker_passes_transcript_to_pipeline(MockSTT):
         chunk_start_pts=0,
     )
 
-    with patch("src.ingestion.stream_worker.StreamRecorder") as MockRecorder, \
-         patch("src.ingestion.stream_worker.ChatCollector") as MockCollector, \
+    with patch("src.ingestion.platforms.tiktok.StreamRecorder") as MockRecorder, \
+         patch("src.ingestion.platforms.tiktok.ChatCollector") as MockCollector, \
          patch("src.ingestion.stream_worker.time.sleep"):
 
         mock_recorder = MagicMock()
@@ -163,8 +165,8 @@ def test_stream_worker_look_forward_on_closed(MockHighlightProcessor):
     mock_processor = MockHighlightProcessor.return_value
 
     with _patch_stt(), \
-         patch("src.ingestion.stream_worker.StreamRecorder") as MockRecorder, \
-         patch("src.ingestion.stream_worker.ChatCollector") as MockCollector, \
+         patch("src.ingestion.platforms.tiktok.StreamRecorder") as MockRecorder, \
+         patch("src.ingestion.platforms.tiktok.ChatCollector") as MockCollector, \
          patch("src.ingestion.stream_worker.ContextExpander") as MockExpander, \
          patch("src.ingestion.stream_worker.time.sleep"):
 
@@ -198,3 +200,51 @@ def test_stream_worker_look_forward_on_closed(MockHighlightProcessor):
     assert call_kwargs["event"] is closed_event
     assert call_kwargs["resolution_pts"] == 85.0
     assert call_kwargs["clip_source"] == "/tmp/live.mp4"
+
+
+@patch("src.ingestion.stream_worker.VideoAnalyzer")
+def test_stream_worker_passes_video_signals_to_pipeline(MockVA):
+    """StreamWorker should sample video and pass video_signals to pipeline."""
+    pipeline = _make_mock_pipeline()
+
+    mock_va = MockVA.return_value
+    mock_va.enabled = True
+    mock_va.sample_frame.return_value = np.zeros((64, 64, 3), dtype=np.uint8)
+    mock_va.analyze.return_value = {
+        "video_scene_change": 0.8,
+        "video_motion": 0.5,
+    }
+
+    with _patch_stt(), \
+         patch("src.ingestion.platforms.tiktok.StreamRecorder") as MockRecorder, \
+         patch("src.ingestion.platforms.tiktok.ChatCollector") as MockCollector, \
+         patch("src.ingestion.stream_worker.time.sleep"):
+
+        mock_recorder = MagicMock()
+        mock_recorder.is_running = True
+        mock_recorder.video_path = "/tmp/live.mp4"
+        mock_recorder.audio_buffer = MagicMock()
+        mock_recorder.audio_buffer.read.return_value = np.zeros(16000 * 5, dtype=np.float32)
+        MockRecorder.return_value = mock_recorder
+
+        mock_collector = MagicMock()
+        mock_collector.is_running = True
+        mock_collector.chat_buffer = MagicMock()
+        mock_collector.chat_buffer.items = []
+        MockCollector.return_value = mock_collector
+
+        worker = StreamWorker(
+            url="https://tiktok.com/@test/live",
+            username="testuser",
+            pipeline=pipeline,
+            max_iterations=1,
+        )
+        worker.run()
+
+    mock_va.sample_frame.assert_called_once_with("/tmp/live.mp4", 0.0)
+    mock_va.analyze.assert_called_once()
+    call_kwargs = pipeline.process_chunk.call_args.kwargs
+    assert call_kwargs["video_signals"] == {
+        "video_scene_change": 0.8,
+        "video_motion": 0.5,
+    }
