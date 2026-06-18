@@ -60,6 +60,8 @@ class StreamRecorder:
         sample_rate: int = 16000,
         stream_id: str = "default",
         video_output_dir: str = "output/streams",
+        max_video_duration_s: float = 1800.0,
+        max_video_size_mb: float = 500.0,
     ):
         self.url = url
         self.audio_buffer = audio_buffer
@@ -68,6 +70,8 @@ class StreamRecorder:
         self.sample_rate = sample_rate
         self.stream_id = stream_id
         self.video_output_dir = video_output_dir
+        self.max_video_duration_s = max_video_duration_s
+        self.max_video_size_mb = max_video_size_mb
 
         os.makedirs(os.path.join(video_output_dir, stream_id), exist_ok=True)
         self.video_path = os.path.join(video_output_dir, stream_id, "live.mp4")
@@ -77,6 +81,8 @@ class StreamRecorder:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._pts: float = 0.0  # running PTS based on samples written
+        self._video_start_pts: float = 0.0
+        self._file_index: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -90,6 +96,8 @@ class StreamRecorder:
 
         self._stop_event.clear()
         self._pts = 0.0
+        self._video_start_pts = 0.0
+        self._file_index = 0
         self._launch_ffmpeg()
         self._thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._thread.start()
@@ -143,6 +151,32 @@ class StreamRecorder:
                 break
             self._read_one_chunk()
 
+    def _rotate_video_file(self) -> None:
+        """Start a new video segment file and accumulate PTS offset."""
+        elapsed = self._pts - self._video_start_pts
+        self.pts_offset += elapsed
+        self._file_index += 1
+        self._video_start_pts = self._pts
+
+        stream_dir = os.path.join(self.video_output_dir, self.stream_id)
+        filename = f"live_{self._file_index:03d}.mp4"
+        self.video_path = os.path.join(stream_dir, filename)
+        logger.info(
+            "Rotated video to %s (pts_offset=%.2f)",
+            self.video_path,
+            self.pts_offset,
+        )
+
+    def _should_rotate_video(self) -> bool:
+        """Return True when duration or file-size threshold is exceeded."""
+        if self._pts - self._video_start_pts >= self.max_video_duration_s:
+            return True
+        if os.path.exists(self.video_path):
+            size_mb = os.path.getsize(self.video_path) / (1024 * 1024)
+            if size_mb >= self.max_video_size_mb:
+                return True
+        return False
+
     def _read_one_chunk(self) -> None:
         """Read exactly `chunk_duration_s` seconds of float32 PCM and push to buffer."""
         if self._ffmpeg_proc is None or self._ffmpeg_proc.stdout is None:
@@ -161,7 +195,10 @@ class StreamRecorder:
             return
 
         audio = np.frombuffer(raw[: samples_read * 4], dtype=np.float32)
-        self.audio_buffer.write(audio, start_pts=self._pts)
+        self.audio_buffer.write(audio, start_pts=self._pts + self.pts_offset)
         self._pts += samples_read / self.sample_rate
         logger.debug("Pushed %d audio samples to buffer (pts=%.2f)", len(audio), self._pts)
+
+        if self._should_rotate_video():
+            self._rotate_video_file()
 

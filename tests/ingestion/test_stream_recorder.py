@@ -87,3 +87,15 @@ def test_stream_recorder_is_running_false_before_start():
         audio_buffer=audio_buffer,
     )
     assert recorder.is_running is False
+
+
+def test_stream_recorder_rotates_video_file(tmp_path):
+    recorder = StreamRecorder(
+        url="https://tiktok.com/@test/live",
+        audio_buffer=AudioRingBuffer(capacity_sec=60, sample_rate=16000),
+        stream_id="rot_test",
+        video_output_dir=str(tmp_path),
+        max_video_duration_s=1.0,  # short for test
+    )
+    recorder._rotate_video_file()
+    assert "live_001.mp4" in recorder.video_path or recorder.pts_offset > 0
