@@ -4,6 +4,7 @@ from typing import List, Dict
 from src.pipeline.audio_dsp import AudioAnalyzer
 from src.pipeline.chat_analyzer import ChatAnalyzer
 from src.engine.aggregator import SignalAggregator
+from src.engine.clip_generator import ClipGenerator
 from src.core.models import SignalSnapshot
 from src.core.models import EventCandidate
 
@@ -54,13 +55,17 @@ class StateMachine:
 
 
 class MasterPipeline:
-    def __init__(self):
+    def __init__(self, clip_source: str = "", output_dir: str = "output/clips"):
         self.audio_analyzer = AudioAnalyzer()
         self.chat_analyzer = ChatAnalyzer()
         self.aggregator = SignalAggregator()
         self.state_machine = StateMachine()
+        self.clip_generator = ClipGenerator(clip_source, output_dir) if clip_source else None
         
     def process_chunk(self, pts: float, audio_data: np.ndarray, chat_messages: List[Dict]):
+        # Capture state before processing
+        prev_state = self.state_machine.current_event.state
+
         # Analyze audio
         audio_res = self.audio_analyzer.analyze_chunk(audio_data)
         
@@ -79,3 +84,8 @@ class MasterPipeline:
         
         # Drive state machine
         self.state_machine.process(snapshot)
+
+        # Emit clip whenever an event just closed
+        if prev_state == "ACTIVE" and self.state_machine.current_event.state == "CLOSED":
+            if self.clip_generator:
+                self.clip_generator.generate(self.state_machine.current_event)
