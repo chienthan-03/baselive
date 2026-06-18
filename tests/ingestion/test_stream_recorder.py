@@ -99,3 +99,13 @@ def test_stream_recorder_rotates_video_file(tmp_path):
     )
     recorder._rotate_video_file()
     assert "live_001.mp4" in recorder.video_path or recorder.pts_offset > 0
+
+
+def test_ytdlp_command_uses_no_live_from_start():
+    from src.ingestion.stream_recorder import _ytdlp_resolve_command
+
+    cmd = _ytdlp_resolve_command()
+    assert "--no-live-from-start" in cmd
+    assert "--live-from-start" not in cmd
+    assert "-g" in cmd
+    assert "hls-pull" in cmd

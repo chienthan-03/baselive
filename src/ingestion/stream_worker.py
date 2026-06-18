@@ -44,6 +44,7 @@ class StreamWorker:
         self.url = url
         self.username = username
         self.pipeline = pipeline
+        self.output_dir = output_dir
         self.stream_id = getattr(pipeline, "stream_id", "default")
         self._logger = stream_logger(__name__, stream_id=self.stream_id)
         self.max_reconnect_attempts = max_reconnect_attempts
@@ -74,6 +75,8 @@ class StreamWorker:
             url=self.url,
             audio_buffer=self.audio_buffer,
             chunk_duration_s=self.chunk_duration_s,
+            stream_id=self.stream_id,
+            video_output_dir=self.output_dir,
         )
         self.collector = adapter.create_chat_collector(
             url=self.url,
@@ -314,6 +317,15 @@ class StreamWorker:
 
                 self._pts += self.chunk_duration_s
                 iterations += 1
+
+                if iterations % 3 == 0:
+                    self._logger.info(
+                        "Alive: chunk #%d, pts=%.0fs, recorder=%s, chat=%s",
+                        iterations,
+                        self._pts,
+                        "ok" if self.recorder.is_running else "down",
+                        "ok" if self.collector.is_running else "down",
+                    )
 
         except Exception:
             if self._metrics is not None:

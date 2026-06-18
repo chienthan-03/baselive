@@ -1,6 +1,9 @@
+import logging
 import os
+from pathlib import Path
 from typing import Generator, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +20,34 @@ from src.ingestion.orchestrator import (
 )
 from src.ingestion.stream_manager import StreamManager
 from src.ingestion.worker_node import CapacityError
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_PROJECT_ROOT / ".env")
+
+
+def _configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    class _FlushingHandler(logging.StreamHandler):
+        def emit(self, record: logging.LogRecord) -> None:
+            super().emit(record)
+            self.flush()
+
+    handler = _FlushingHandler()
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(level)
+    root.addHandler(handler)
+
+
+_configure_logging()
 
 # --- Dependency ---
 
@@ -297,6 +328,13 @@ def create_app() -> FastAPI:
         description="Review and approve AI-detected livestream highlights.",
         version="1.0.0"
     )
+
+    @app.middleware("http")
+    async def log_requests(request, call_next):
+        path = request.url.path
+        if not path.startswith(("/static", "/clips")):
+            logging.getLogger("src.api.access").info("%s %s", request.method, path)
+        return await call_next(request)
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     os.makedirs(static_dir, exist_ok=True)

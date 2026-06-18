@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from typing import List, Dict, Optional
 
@@ -14,6 +15,8 @@ from src.buffer.signal_history import SignalHistoryBuffer
 from src.db.database import Database
 
 NOISE_FLOOR = 0.02
+
+logger = logging.getLogger(__name__)
 
 
 class MasterPipeline:
@@ -179,6 +182,14 @@ class MasterPipeline:
                     peak_pts=ev.peak_pts,
                 )
                 ev.draft_highlight_id = highlight_id
+                logger.info(
+                    "DRAFT highlight #%d on %s (score=%.2f, pts=%.1f-%.1f)",
+                    highlight_id,
+                    self.stream_id,
+                    ev.peak_score,
+                    ev.start_pts,
+                    pts,
+                )
                 if self.highlight_processor is not None:
                     self.highlight_processor.record_highlight_created("DRAFT")
         elif new_state == "ACTIVE" and ev.draft_highlight_id is not None and self.db:

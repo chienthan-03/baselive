@@ -15,36 +15,21 @@ from src.buffer.circular_buffer import AudioRingBuffer
 
 logger = logging.getLogger(__name__)
 
-# FFmpeg reads stdin (from yt-dlp pipe) and outputs:
-#   - raw float32 PCM to stdout at 16kHz mono
-#   - video copy to disk (path supplied at launch time)
-_FFMPEG_CMD_PREFIX = [
-    "ffmpeg",
-    "-loglevel", "error",
-    "-i", "pipe:0",         # stdin from yt-dlp
-    "-map", "0:a",
-    "-ar", "16000",         # 16kHz sample rate
-    "-ac", "1",             # mono
-    "-f", "f32le",          # float32 little-endian PCM
-    "pipe:1",               # stdout
-    "-map", "0:v",
-    "-c:v", "copy",
-    "-movflags", "+frag_keyframe+empty_moov",
-]
-
-_YTDLP_ARGS = [
-    "--live-from-start",
-    "--no-part",
-    "-o", "pipe:1",         # pipe video to stdout
-    "-f", "best[ext=mp4]/best",
-]
+_YTDLP_FORMAT = "hls-pull"
 
 
-def _ytdlp_command() -> list[str]:
-    """Resolve yt-dlp binary; fall back to `python -m yt_dlp` when not on PATH."""
+def _ytdlp_resolve_command() -> list[str]:
+    """Build yt-dlp command that prints a direct stream URL (-g)."""
     if shutil.which("yt-dlp"):
-        return ["yt-dlp", *_YTDLP_ARGS]
-    return [sys.executable, "-m", "yt_dlp", *_YTDLP_ARGS]
+        base = ["yt-dlp"]
+    else:
+        base = [sys.executable, "-m", "yt_dlp"]
+    return base + ["--no-live-from-start", "-g", "-f", _YTDLP_FORMAT]
+
+
+# Backwards-compatible alias used in tests.
+def _ytdlp_command() -> list[str]:
+    return _ytdlp_resolve_command()
 
 
 class StreamRecorder:
@@ -97,7 +82,7 @@ class StreamRecorder:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Launch yt-dlp | ffmpeg subprocesses and start reader thread."""
+        """Resolve stream URL, launch ffmpeg, and start reader thread."""
         if self._thread and self._thread.is_alive():
             logger.warning("StreamRecorder already running")
             return
@@ -107,9 +92,12 @@ class StreamRecorder:
         self._video_start_pts = 0.0
         self._file_index = 0
         self._launch_ffmpeg()
+        if self._ffmpeg_proc is None:
+            logger.error("StreamRecorder failed to start for %s", self.url)
+            return
         self._thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._thread.start()
-        logger.info("StreamRecorder started for %s", self.url)
+        logger.info("StreamRecorder started for %s -> %s", self.url, self.video_path)
 
     def stop(self) -> None:
         """Signal the reader loop to stop and terminate subprocesses."""
@@ -124,38 +112,88 @@ class StreamRecorder:
             self._thread is not None
             and self._thread.is_alive()
             and not self._stop_event.is_set()
+            and self._ffmpeg_proc is not None
+            and self._ffmpeg_proc.poll() is None
         )
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _launch_ffmpeg(self) -> None:
-        """Start the FFmpeg subprocess (reading from yt-dlp pipe or direct URL)."""
+    def _resolve_stream_url(self) -> Optional[str]:
+        cmd = _ytdlp_resolve_command() + [self.url]
         try:
-            ytdlp_proc = subprocess.Popen(
-                _ytdlp_command() + [self.url],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
-            self._ffmpeg_proc = subprocess.Popen(
-                _FFMPEG_CMD_PREFIX + [self.video_path],
-                stdin=ytdlp_proc.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-            # Allow yt-dlp process to receive SIGPIPE when ffmpeg exits
-            if ytdlp_proc.stdout:
-                ytdlp_proc.stdout.close()
-        except FileNotFoundError as e:
-            logger.error("Failed to launch recorder process: %s", e)
+        except FileNotFoundError as exc:
+            logger.error("yt-dlp not found: %s", exc)
+            return None
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            logger.error("yt-dlp resolve failed for %s: %s", self.url, err[-500:])
+            return None
+
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            logger.error("yt-dlp returned no stream URL for %s", self.url)
+            return None
+
+        stream_url = lines[-1]
+        logger.info("Resolved live stream URL for %s", self.url)
+        return stream_url
+
+    def _ffmpeg_command(self, stream_url: str) -> list[str]:
+        return [
+            "ffmpeg",
+            "-loglevel", "error",
+            "-i", stream_url,
+            "-map", "0:a?",
+            "-ar", str(self.sample_rate),
+            "-ac", "1",
+            "-f", "f32le",
+            "pipe:1",
+            "-map", "0:v?",
+            "-c:v", "copy",
+            "-movflags", "+frag_keyframe+empty_moov",
+            self.video_path,
+        ]
+
+    def _launch_ffmpeg(self) -> None:
+        stream_url = self._resolve_stream_url()
+        if not stream_url:
             self._ffmpeg_proc = None
+            return
+        try:
+            self._ffmpeg_proc = subprocess.Popen(
+                self._ffmpeg_command(stream_url),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            logger.error("Failed to launch ffmpeg: %s", exc)
+            self._ffmpeg_proc = None
+
+    def _log_ffmpeg_stderr(self) -> None:
+        if self._ffmpeg_proc is None or self._ffmpeg_proc.stderr is None:
+            return
+        try:
+            err = self._ffmpeg_proc.stderr.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            return
+        if err:
+            logger.error("ffmpeg failed for %s: %s", self.url, err[-500:])
 
     def _reader_loop(self) -> None:
         """Continuous loop: read PCM chunks from ffmpeg stdout."""
         while not self._stop_event.is_set():
             if self._ffmpeg_proc is None or self._ffmpeg_proc.poll() is not None:
-                logger.warning("FFmpeg process ended unexpectedly")
+                self._log_ffmpeg_stderr()
+                logger.warning("FFmpeg process ended unexpectedly for %s", self.url)
                 break
             self._read_one_chunk()
 
@@ -209,4 +247,3 @@ class StreamRecorder:
 
         if self._should_rotate_video():
             self._rotate_video_file()
-

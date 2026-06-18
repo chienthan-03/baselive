@@ -70,7 +70,16 @@ class OrchestratorService:
         self._worker_node = WorkerNode(node_id=NODE_ID, max_streams=self._max_streams)
         self._lock = threading.Lock()
 
-        self.recover_streams()
+        interrupted = self.recover_streams()
+        if interrupted:
+            logger.info(
+                "Startup: %d stream(s) marked INTERRUPTED (restart to resume): %s",
+                len(interrupted),
+                interrupted,
+            )
+        else:
+            logger.info("Startup: no streams to recover")
+        logger.info("Orchestrator ready (node=%s, max_streams=%d)", NODE_ID, self._max_streams)
 
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = threading.Thread(
