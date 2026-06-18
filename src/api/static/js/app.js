@@ -279,55 +279,81 @@ function renderList() {
 
 // ── Select Highlight ───────────────────────────────────────────────────
 function selectHighlight(h) {
-    state.selected = h;
-    state.startAdjust = 0;
-    state.endAdjust = 0;
+    try {
+        state.selected = h;
+        state.startAdjust = 0;
+        state.endAdjust = 0;
 
-    // Update sidebar selection
-    document.querySelectorAll('.highlight-card').forEach(c => {
-        c.classList.toggle('selected', c.getAttribute('data-id') == h.id);
-    });
+        // Update sidebar selection
+        document.querySelectorAll('.highlight-card').forEach(c => {
+            c.classList.toggle('selected', c.getAttribute('data-id') == h.id);
+        });
 
-    // Show detail panel
-    dom.previewPlaceholder.hidden = true;
-    dom.detailCard.hidden = false;
+        // Show detail panel
+        dom.previewPlaceholder.hidden = true;
+        dom.detailCard.hidden = false;
 
-    // Populate details
-    dom.detailTitle.textContent = `Highlight #${h.id}`;
+        // Populate details
+        dom.detailTitle.textContent = `Highlight #${h.id}`;
 
-    // Status badge
-    dom.statusBadge.textContent = h.status;
-    dom.statusBadge.className = `status-badge ${h.status}`;
+        // Status badge
+        dom.statusBadge.textContent = h.status;
+        dom.statusBadge.className = `status-badge ${h.status}`;
 
-    dom.detailStream.textContent = h.stream_id;
-    dom.detailStart.textContent = fmtTime(h.start_pts);
-    dom.detailEnd.textContent = fmtTime(h.end_pts);
-    dom.detailDuration.textContent = fmtDuration(h.start_pts, h.end_pts);
+        dom.detailStream.textContent = h.stream_id;
+        dom.detailStart.textContent = fmtTime(h.start_pts);
+        dom.detailEnd.textContent = fmtTime(h.end_pts);
+        dom.detailDuration.textContent = fmtDuration(h.start_pts, h.end_pts);
 
-    // Score ring
-    setScore(Math.max(0, Math.min(1, h.score ?? 0)));
+        // Score ring
+        setScore(Math.max(0, Math.min(1, h.score ?? 0)));
 
-    // Reset sliders
-    dom.sliderStart.value = 0;
-    dom.sliderEnd.value = 0;
-    dom.sliderStartVal.textContent = '0s';
-    dom.sliderEndVal.textContent = '0s';
+        // Reset sliders
+        dom.sliderStart.value = 0;
+        dom.sliderEnd.value = 0;
+        dom.sliderStartVal.textContent = '0s';
+        dom.sliderEndVal.textContent = '0s';
 
-    // Video player
-    if (h.clip_path) {
-        // Extract filename from path for URL
-        const fileName = h.clip_path.split(/[\\/]/).pop();
-        dom.videoWrapper.hidden = false;
-        dom.videoPlayer.src = `/clips/${encodeURIComponent(fileName)}`;
-        dom.videoPlayer.load();
-        dom.videoOverlay.textContent = `Score ${Math.round((h.score ?? 0) * 100)}% · ${fmtDuration(h.start_pts, h.end_pts)}`;
-    } else {
-        dom.videoWrapper.hidden = true;
+        // Video player
+        const clipToPlay = h.clip_path || h.draft_clip_path;
+        if (clipToPlay) {
+            // Extract filename from path for URL
+            const fileName = clipToPlay.split(/[\\/]/).pop();
+            const newSrc = `/clips/${encodeURIComponent(fileName)}`;
+            
+            // Only reload if the source actually changed
+            if (dom.videoPlayer.getAttribute('data-src') !== newSrc) {
+                const wasPlaying = !dom.videoPlayer.paused;
+                const currentTime = dom.videoPlayer.currentTime;
+                
+                dom.videoPlayer.setAttribute('data-src', newSrc);
+                dom.videoPlayer.src = newSrc;
+                dom.videoPlayer.load();
+                
+                if (wasPlaying) {
+                    const onMetadata = () => {
+                        dom.videoPlayer.currentTime = currentTime;
+                        dom.videoPlayer.play().catch(() => {});
+                        dom.videoPlayer.removeEventListener('loadedmetadata', onMetadata);
+                    };
+                    dom.videoPlayer.addEventListener('loadedmetadata', onMetadata);
+                }
+            }
+            dom.videoWrapper.hidden = false;
+            dom.videoOverlay.textContent = `Score ${Math.round((h.score ?? 0) * 100)}% · ${fmtDuration(h.start_pts, h.end_pts)}`;
+        } else {
+            dom.videoPlayer.removeAttribute('data-src');
+            dom.videoPlayer.src = '';
+            dom.videoWrapper.hidden = true;
+        }
+
+        // Button states
+        dom.btnApprove.disabled = h.status === 'APPROVED';
+        dom.btnReject.disabled  = h.status === 'REJECTED';
+    } catch (err) {
+        console.error("Error in selectHighlight:", err);
+        showToast("❌ Lỗi hiển thị highlight: " + err.message, "error");
     }
-
-    // Button states
-    dom.btnApprove.disabled = h.status === 'APPROVED';
-    dom.btnReject.disabled  = h.status === 'REJECTED';
 }
 
 // ── Sliders ────────────────────────────────────────────────────────────
@@ -622,6 +648,22 @@ async function refreshData() {
         state.highlights = await api.getHighlights(state.streamFilter);
         renderStreamOptions();
         renderList();
+
+        // If there's a selected highlight, update it with the fresh data
+        if (state.selected) {
+            const fresh = state.highlights.find(h => h.id === state.selected.id);
+            if (fresh) {
+                const changed = fresh.clip_path !== state.selected.clip_path ||
+                                fresh.draft_clip_path !== state.selected.draft_clip_path ||
+                                fresh.start_pts !== state.selected.start_pts ||
+                                fresh.end_pts !== state.selected.end_pts ||
+                                fresh.status !== state.selected.status ||
+                                fresh.score !== state.selected.score;
+                if (changed) {
+                    selectHighlight(fresh);
+                }
+            }
+        }
     } catch (e) {
         console.error('Fetch error:', e);
     }

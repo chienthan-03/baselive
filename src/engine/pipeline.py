@@ -1,4 +1,5 @@
 import logging
+import os
 import numpy as np
 from typing import List, Dict, Optional
 
@@ -193,11 +194,36 @@ class MasterPipeline:
                 if self.highlight_processor is not None:
                     self.highlight_processor.record_highlight_created("DRAFT")
         elif new_state == "ACTIVE" and ev.draft_highlight_id is not None and self.db:
+            draft_clip_path = None
+            if self.clip_generator is not None:
+                try:
+                    # Get old draft clip path to delete it later
+                    old_highlight = self.db.get_highlight(ev.draft_highlight_id)
+                    old_draft_path = old_highlight.get("draft_clip_path") if old_highlight else None
+
+                    # Generate new draft clip
+                    draft_clip_path = self.clip_generator.generate_draft(ev, end_pts=pts)
+
+                    # Delete old draft clip to save space
+                    if old_draft_path and os.path.exists(old_draft_path):
+                        try:
+                            os.remove(old_draft_path)
+                        except Exception as delete_err:
+                            logger.warning("Failed to delete old draft clip %s: %s", old_draft_path, delete_err)
+                except Exception as draft_err:
+                    logger.error("Failed to generate draft clip for highlight #%d: %s", ev.draft_highlight_id, draft_err)
+
+            update_fields = {
+                "score": ev.peak_score,
+                "peak_pts": ev.peak_pts,
+                "end_pts": pts,
+            }
+            if draft_clip_path:
+                update_fields["draft_clip_path"] = draft_clip_path
+
             self.db.update_highlight(
                 ev.draft_highlight_id,
-                score=ev.peak_score,
-                peak_pts=ev.peak_pts,
-                end_pts=pts,
+                **update_fields
             )
 
         if (

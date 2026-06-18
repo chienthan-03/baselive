@@ -200,7 +200,8 @@ class Database:
                 quality = ?,
                 content_type = ?,
                 ai_start_pts = ?,
-                ai_end_pts = ?
+                ai_end_pts = ?,
+                draft_clip_path = NULL
             WHERE id = ?
         ''', (start_pts, end_pts, clip_path, quality, content_type,
               ai_start_pts, ai_end_pts, highlight_id))

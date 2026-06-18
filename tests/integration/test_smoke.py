@@ -16,6 +16,7 @@ def _make_worker_patches():
       patch("src.ingestion.platforms.tiktok.ChatCollector"),
       patch("src.ingestion.stream_worker.time.sleep"),
       patch("src.engine.clip_generator.ClipGenerator.generate_final", return_value="/tmp/final.mp4"),
+      patch("src.engine.clip_generator.ClipGenerator.generate_draft", return_value="/tmp/draft.mp4"),
   )
 
 
@@ -79,7 +80,8 @@ def test_full_pipeline_detects_spike_event():
     with _make_worker_patches()[0] as MockSTT, \
          _make_worker_patches()[1] as MockRecorder, \
          _make_worker_patches()[2] as MockCollector, \
-         _make_worker_patches()[3]:
+         _make_worker_patches()[3], \
+         _make_worker_patches()[5]:
         _setup_mocks(MockSTT, MockRecorder, MockCollector)
 
         worker = StreamWorker(
@@ -139,7 +141,8 @@ def test_full_pipeline_draft_to_final_lifecycle(tmp_path):
          patches[1] as MockRecorder, \
          patches[2] as MockCollector, \
          patches[3], \
-         patches[4]:
+         patches[4], \
+         patches[5]:
 
         _setup_mocks(MockSTT, MockRecorder, MockCollector)
 

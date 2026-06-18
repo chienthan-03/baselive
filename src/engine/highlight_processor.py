@@ -221,6 +221,17 @@ class HighlightProcessor:
         records: List[Dict] = []
 
         if parent_id is not None and self.db is not None:
+            # Delete draft clip from disk if it exists
+            try:
+                import os
+                old_highlight = self.db.get_highlight(parent_id)
+                if old_highlight and old_highlight.get("draft_clip_path"):
+                    draft_path = old_highlight["draft_clip_path"]
+                    if os.path.exists(draft_path):
+                        os.remove(draft_path)
+            except Exception:
+                pass
+
             self.db.upgrade_to_final(
                 parent_id,
                 start_pts=resolved.start_pts,
@@ -273,6 +284,17 @@ class HighlightProcessor:
         clip_path: str,
     ) -> Dict:
         if self.db is not None and resolved.draft_highlight_id is not None:
+            # Delete draft clip from disk if it exists
+            try:
+                import os
+                old_highlight = self.db.get_highlight(resolved.draft_highlight_id)
+                if old_highlight and old_highlight.get("draft_clip_path"):
+                    draft_path = old_highlight["draft_clip_path"]
+                    if os.path.exists(draft_path):
+                        os.remove(draft_path)
+            except Exception:
+                pass
+
             self.db.upgrade_to_final(
                 resolved.draft_highlight_id,
                 start_pts=micro.start_pts,

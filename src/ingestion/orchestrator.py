@@ -264,7 +264,7 @@ class OrchestratorService:
 
         stream_output = f"{self._output_dir}/{stream_id}"
         pipeline = MasterPipeline(
-            output_dir=stream_output,
+            output_dir="output/clips",
             db=self._db,
             stream_id=stream_id,
         )
