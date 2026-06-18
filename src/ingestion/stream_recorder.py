@@ -3,7 +3,9 @@ StreamRecorder: Pulls a livestream via yt-dlp piped through FFmpeg,
 reads raw PCM float32 audio from stdout, and feeds it into an AudioRingBuffer.
 """
 import os
+import shutil
 import subprocess
+import sys
 import threading
 import logging
 import numpy as np
@@ -30,13 +32,19 @@ _FFMPEG_CMD_PREFIX = [
     "-movflags", "+frag_keyframe+empty_moov",
 ]
 
-_YTDLP_CMD_TEMPLATE = [
-    "yt-dlp",
+_YTDLP_ARGS = [
     "--live-from-start",
     "--no-part",
     "-o", "pipe:1",         # pipe video to stdout
     "-f", "best[ext=mp4]/best",
 ]
+
+
+def _ytdlp_command() -> list[str]:
+    """Resolve yt-dlp binary; fall back to `python -m yt_dlp` when not on PATH."""
+    if shutil.which("yt-dlp"):
+        return ["yt-dlp", *_YTDLP_ARGS]
+    return [sys.executable, "-m", "yt_dlp", *_YTDLP_ARGS]
 
 
 class StreamRecorder:
@@ -126,7 +134,7 @@ class StreamRecorder:
         """Start the FFmpeg subprocess (reading from yt-dlp pipe or direct URL)."""
         try:
             ytdlp_proc = subprocess.Popen(
-                _YTDLP_CMD_TEMPLATE + [self.url],
+                _ytdlp_command() + [self.url],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
