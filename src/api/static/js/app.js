@@ -3,6 +3,8 @@
  * Handles: data fetching, rendering, interactions, video player, sliders, toasts
  */
 
+const MAX_CONCURRENT_STREAMS = 5;
+
 // ── State ──────────────────────────────────────────────────────────────
 const state = {
     highlights: [],
@@ -57,6 +59,14 @@ const dom = {
 
     streamSelect:       $('stream-select'),
 
+    liveForm:           $('live-form'),
+    liveUrl:            $('live-url'),
+    liveStreamId:       $('live-stream-id'),
+    btnStartLive:       $('btn-start-live'),
+    liveCount:          $('live-count'),
+    activeStreamsList:  $('active-streams-list'),
+    liveEmpty:          $('live-empty'),
+
     detailContentType:  $('detail-content-type'),
     qualityWarnings:    $('quality-warnings'),
 
@@ -104,6 +114,32 @@ const api = {
         const res = await fetch('/api/health/ready');
         const data = await res.json().catch(() => ({}));
         return { ok: res.ok, status: data.status, ready: data.ready };
+    },
+    async startStream(url, streamId, platform = 'tiktok') {
+        const res = await fetch('/api/streams/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, stream_id: streamId, platform }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const err = new Error(data.detail || `HTTP ${res.status}`);
+            err.status = res.status;
+            throw err;
+        }
+        return data;
+    },
+    async stopStream(streamId) {
+        const res = await fetch(`/api/streams/${encodeURIComponent(streamId)}/stop`, {
+            method: 'POST',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const err = new Error(data.detail || `HTTP ${res.status}`);
+            err.status = res.status;
+            throw err;
+        }
+        return data;
     },
 };
 
@@ -417,13 +453,165 @@ function renderStreamOptions() {
 dom.streamSelect.addEventListener('change', async () => {
     state.streamFilter = dom.streamSelect.value;
     await refreshData();
+    renderActiveStreams();
 });
+
+// ── Live control ───────────────────────────────────────────────────────
+function extractTikTokUsername(input) {
+    const trimmed = input.trim();
+    const urlMatch = trimmed.match(/tiktok\.com\/@([^/?#]+)/i);
+    if (urlMatch) return urlMatch[1];
+    const atMatch = trimmed.match(/^@?([^/?#\s]+)$/);
+    return atMatch ? atMatch[1] : null;
+}
+
+function suggestStreamId(url) {
+    const username = extractTikTokUsername(url);
+    if (!username) return '';
+    const slug = username.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    return slug ? `tiktok-${slug}` : '';
+}
+
+dom.liveUrl.addEventListener('blur', () => {
+    if (dom.liveStreamId.value.trim()) return;
+    const suggested = suggestStreamId(dom.liveUrl.value);
+    if (suggested) dom.liveStreamId.value = suggested;
+});
+
+function renderActiveStreams() {
+    const running = state.streams.filter(s => s.running || s.status === 'RUNNING');
+    const list = dom.activeStreamsList;
+    const empty = dom.liveEmpty;
+
+    if (dom.liveCount) {
+        dom.liveCount.textContent = `${running.length}/${MAX_CONCURRENT_STREAMS}`;
+    }
+    dom.btnStartLive.disabled = running.length >= MAX_CONCURRENT_STREAMS;
+
+    list.innerHTML = '';
+    if (running.length === 0) {
+        list.hidden = true;
+        empty.hidden = false;
+        return;
+    }
+
+    empty.hidden = true;
+    list.hidden = false;
+
+    running.forEach(stream => {
+        const li = document.createElement('li');
+        li.className = 'active-stream-item';
+        if (state.streamFilter === stream.stream_id) {
+            li.classList.add('is-filtered');
+        }
+        li.setAttribute('role', 'button');
+        li.setAttribute('tabindex', '0');
+        li.setAttribute('aria-label', `Lọc highlight của stream ${stream.stream_id}`);
+
+        const info = document.createElement('div');
+        info.className = 'active-stream-info';
+        info.innerHTML = `
+            <div class="active-stream-id" title="${stream.stream_id}">${stream.stream_id}</div>
+            <div class="active-stream-meta">
+                <span class="active-stream-dot" aria-hidden="true"></span>
+                <span>Đang chạy · ${stream.platform || 'tiktok'}</span>
+            </div>
+        `;
+
+        const btnStop = document.createElement('button');
+        btnStop.type = 'button';
+        btnStop.className = 'btn btn-reject btn-sm btn-stop-stream';
+        btnStop.textContent = 'Dừng';
+        btnStop.setAttribute('aria-label', `Dừng stream ${stream.stream_id}`);
+        btnStop.addEventListener('click', (e) => {
+            e.stopPropagation();
+            handleStopStream(stream.stream_id, btnStop);
+        });
+
+        const handleFilterStream = async () => {
+            state.streamFilter = stream.stream_id;
+            dom.streamSelect.value = stream.stream_id;
+            await refreshData();
+            renderActiveStreams();
+        };
+        li.addEventListener('click', handleFilterStream);
+        li.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleFilterStream();
+            }
+        });
+
+        li.append(info, btnStop);
+        list.appendChild(li);
+    });
+}
+
+function streamErrorMessage(err) {
+    if (err.status === 409) return 'Stream ID này đang chạy rồi.';
+    if (err.status === 429) return 'Đã đạt giới hạn số stream đồng thời.';
+    if (err.status === 501) return 'Nền tảng chưa được hỗ trợ.';
+    return err.message || 'Có lỗi xảy ra.';
+}
+
+async function handleStartLive(event) {
+    event.preventDefault();
+
+    const url = dom.liveUrl.value.trim();
+    const streamId = dom.liveStreamId.value.trim();
+
+    if (!url || !streamId) {
+        showToast('⚠️ Nhập URL TikTok và Stream ID.', 'error');
+        return;
+    }
+
+    const runningCount = state.streams.filter(s => s.running || s.status === 'RUNNING').length;
+    if (runningCount >= MAX_CONCURRENT_STREAMS) {
+        showToast(`⚠️ Đã đạt giới hạn ${MAX_CONCURRENT_STREAMS} live cùng lúc.`, 'error');
+        return;
+    }
+
+    dom.btnStartLive.disabled = true;
+    try {
+        await api.startStream(url, streamId);
+        showToast(`🔴 Đã thêm live: ${streamId} (${runningCount + 1}/${MAX_CONCURRENT_STREAMS})`, 'success');
+        dom.liveUrl.value = '';
+        dom.liveStreamId.value = '';
+        dom.liveUrl.focus();
+        await refreshStreams();
+        await refreshData();
+    } catch (e) {
+        showToast(`❌ ${streamErrorMessage(e)}`, 'error');
+    } finally {
+        renderActiveStreams();
+    }
+}
+
+async function handleStopStream(streamId, btn) {
+    btn.disabled = true;
+    try {
+        await api.stopStream(streamId);
+        showToast(`⏹ Đã dừng stream: ${streamId}`, 'info');
+        if (state.streamFilter === streamId) {
+            state.streamFilter = 'all';
+            dom.streamSelect.value = 'all';
+        }
+        await refreshStreams();
+        await refreshData();
+    } catch (e) {
+        showToast(`❌ ${streamErrorMessage(e)}`, 'error');
+        btn.disabled = false;
+    }
+}
+
+dom.liveForm.addEventListener('submit', handleStartLive);
 
 // ── Data fetching ──────────────────────────────────────────────────────
 async function refreshStreams() {
     try {
         state.streams = await api.getStreams();
         renderStreamOptions();
+        renderActiveStreams();
     } catch (e) {
         console.error('Stream fetch error:', e);
     }

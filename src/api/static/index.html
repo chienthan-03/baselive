@@ -55,15 +55,48 @@
             <button class="filter-tab" role="tab" aria-selected="false" data-filter="REJECTED" id="tab-rejected">Đã từ chối</button>
         </div>
 
-        <div class="stream-filter" role="group" aria-label="Lọc theo stream">
-            <label class="stream-filter-label" for="stream-select">Stream</label>
-            <select class="stream-select" id="stream-select" aria-label="Chọn stream">
-                <option value="all">Tất cả streams</option>
-            </select>
+        <div class="live-panel" role="region" aria-label="Điều khiển livestream">
+            <h2 class="live-panel-title">
+                Theo dõi live
+                <span class="live-count" id="live-count" aria-live="polite">0/5</span>
+            </h2>
+            <p class="live-hint">Có thể theo dõi tối đa 5 live cùng lúc. Mỗi live cần Stream ID khác nhau.</p>
+            <form class="live-form" id="live-form" novalidate>
+                <label class="live-field">
+                    <span class="live-field-label">TikTok URL / @username</span>
+                    <input
+                        type="text"
+                        id="live-url"
+                        class="live-input"
+                        placeholder="https://tiktok.com/@user/live"
+                        autocomplete="off"
+                        required
+                        aria-required="true"
+                    />
+                </label>
+                <label class="live-field">
+                    <span class="live-field-label">Stream ID</span>
+                    <input
+                        type="text"
+                        id="live-stream-id"
+                        class="live-input"
+                        placeholder="my-stream-1"
+                        autocomplete="off"
+                        required
+                        aria-required="true"
+                    />
+                </label>
+                <button type="submit" class="btn btn-live btn-sm" id="btn-start-live" aria-label="Bắt đầu theo dõi livestream">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>
+                    Bắt đầu live
+                </button>
+            </form>
+            <ul class="active-streams-list" id="active-streams-list" aria-label="Streams đang chạy" hidden></ul>
+            <p class="live-empty" id="live-empty">Chưa có stream nào đang chạy</p>
         </div>
 
         <div class="stream-filter" role="group" aria-label="Lọc theo stream">
-            <label class="stream-filter-label" for="stream-select">Stream</label>
+            <label class="stream-filter-label" for="stream-select">Lọc highlight</label>
             <select class="stream-select" id="stream-select" aria-label="Chọn stream">
                 <option value="all">Tất cả streams</option>
             </select>
