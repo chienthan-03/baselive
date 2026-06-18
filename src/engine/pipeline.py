@@ -7,6 +7,7 @@ from src.engine.aggregator import SignalAggregator
 from src.engine.clip_generator import ClipGenerator
 from src.core.models import SignalSnapshot
 from src.core.models import EventCandidate
+from src.db.database import Database
 
 # We need to import StateMachine, but it was not created in Phase 1.1 or 1.2!
 # Let me mock a simple StateMachine for now since it was part of Phase 1 MVP but I might have missed its implementation.
@@ -55,12 +56,15 @@ class StateMachine:
 
 
 class MasterPipeline:
-    def __init__(self, clip_source: str = "", output_dir: str = "output/clips"):
+    def __init__(self, clip_source: str = "", output_dir: str = "output/clips", 
+                 db: Database = None, stream_id: str = "default"):
         self.audio_analyzer = AudioAnalyzer()
         self.chat_analyzer = ChatAnalyzer()
         self.aggregator = SignalAggregator()
         self.state_machine = StateMachine()
         self.clip_generator = ClipGenerator(clip_source, output_dir) if clip_source else None
+        self.db = db
+        self.stream_id = stream_id
         
     def process_chunk(self, pts: float, audio_data: np.ndarray, chat_messages: List[Dict]):
         # Capture state before processing
@@ -87,5 +91,18 @@ class MasterPipeline:
 
         # Emit clip whenever an event just closed
         if prev_state == "ACTIVE" and self.state_machine.current_event.state == "CLOSED":
+            clip_path = ""
             if self.clip_generator:
-                self.clip_generator.generate(self.state_machine.current_event)
+                clip_path = self.clip_generator.generate(self.state_machine.current_event)
+            
+            if self.db:
+                ev = self.state_machine.current_event
+                self.db.insert_highlight(
+                    stream_id=self.stream_id,
+                    start_pts=ev.start_pts,
+                    end_pts=ev.end_pts,
+                    score=ev.peak_score,
+                    clip_path=clip_path,
+                    status="PENDING",
+                    reason="Pipeline detected highlight"
+                )
