@@ -1,0 +1,6 @@
+.worktrees/
+__pycache__/
+*.pyc
+venv/
+.env
+base_live.db
