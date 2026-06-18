@@ -25,3 +25,17 @@ class EventCandidate:
     peak_pts: float = 0.0
     peak_score: float = 0.0
     below_close_since: float = 0.0
+
+@dataclass
+class TranscriptSegment:
+    start: float
+    end: float
+    text: str
+    confidence: float
+
+@dataclass
+class TranscriptResult:
+    text: str
+    segments: List[TranscriptSegment]
+    language: str
+    chunk_start_pts: float
