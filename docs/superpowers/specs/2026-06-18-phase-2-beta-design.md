@@ -373,6 +373,8 @@ class PendingEventQueue:
 
 **Enqueue timing:** After `ContextExpander` + look-forward on CLOSED, `StreamWorker` calls `enqueue(to_resolved(boundary))`. If `is_ready()`, invoke `HighlightProcessor.process_pending_queue()`.
 
+**Timeout polling:** `MasterPipeline.process_chunk()` also checks `pending_queue.is_ready(current_pts)` every 5s tick so a lone event drains after `MAX_WAIT_SEC` without requiring a second CLOSED event.
+
 **Rationale:** Adjacent events (< 5s gap) need both boundaries present to decide MERGE vs KEEP_BOTH. Single events finalize after 30s wait.
 
 #### Resolution types
@@ -538,6 +540,8 @@ CREATE TABLE highlight_feedback (
 3. Accept rate by `content_type` → per-type sensitivity
 4. Common `false_positive` rejects → bump `OPEN_THR`
 5. Smoothing: `new = 0.7 * old + 0.3 * learned`
+
+**Config persistence:** Learned values written to `config/stream_config.json` (per-stream overrides) and `config/global_prior.json` (global defaults). `BaselineCalibrator` and `ClipGenerator` read from these files on startup and after daily job runs.
 
 **Minimum data gate:** Require ≥ 10 feedback entries before applying changes.
 
