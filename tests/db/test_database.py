@@ -102,3 +102,11 @@ def test_insert_draft_highlight(tmp_db):
     row = tmp_db.get_highlight(hid)
     assert row["highlight_type"] == "DRAFT"
     assert row["is_growing"] == 1
+
+
+def test_streams_table_crud(test_db):
+    test_db.upsert_stream("s1", platform="tiktok", url="http://x", status="RUNNING", node_id="node-0", started_at=100.0)
+    row = test_db.get_stream("s1")
+    assert row["status"] == "RUNNING"
+    test_db.update_stream_status("s1", "STOPPED", ended_at=200.0)
+    assert test_db.get_stream("s1")["status"] == "STOPPED"

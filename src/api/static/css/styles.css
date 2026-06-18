@@ -173,10 +173,30 @@ body {
     background: var(--text-muted);
 }
 
-.status-dot--live {
+.status-dot--live,
+.status-dot--ok {
     background: var(--accent-teal);
     box-shadow: 0 0 0 0 hsla(175, 80%, 50%, 0.7);
     animation: pulse-dot 2s infinite;
+}
+
+.status-dot--degraded {
+    background: hsl(38, 92%, 55%);
+    box-shadow: 0 0 0 0 hsla(38, 92%, 55%, 0.5);
+    animation: pulse-dot-amber 2s infinite;
+}
+
+.status-dot--error,
+.status-dot--unknown {
+    background: var(--accent-red);
+    box-shadow: none;
+    animation: none;
+}
+
+@keyframes pulse-dot-amber {
+    0%   { box-shadow: 0 0 0 0 hsla(38,92%,55%,.5); }
+    70%  { box-shadow: 0 0 0 7px hsla(38,92%,55%,0); }
+    100% { box-shadow: 0 0 0 0 hsla(38,92%,55%,0); }
 }
 
 @keyframes pulse-dot {

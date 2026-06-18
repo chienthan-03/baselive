@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from urllib import error, request
 
 from src.core.models import AmbiguousPair, BoundaryResult, EventCandidate
+from src.engine.llm_budget import LLMBudgetTracker
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,6 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "google/gemini-2.0-flash-001"
 MAX_CALLS_PER_HOUR = 10
 MIN_GAP_SEC = 30
-DAILY_BUDGET_USD = 5.0
-ESTIMATED_COST_PER_CALL = 0.02
 
 
 @dataclass
@@ -35,17 +34,25 @@ class LLMOverlapResult:
 
 
 class LLMGate:
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        budget_tracker: Optional[LLMBudgetTracker] = None,
+    ):
         self._api_key = api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY")
         self._model = model or os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
+        self._budget = budget_tracker or LLMBudgetTracker()
         self._call_timestamps: List[float] = []
         self._last_call_time: Optional[float] = None
-        self._daily_spend_usd: float = 0.0
-        self._daily_spend_date: Optional[str] = None
 
     @property
     def enabled(self) -> bool:
         return bool(self._api_key)
+
+    @property
+    def budget_tracker(self) -> LLMBudgetTracker:
+        return self._budget
 
     def should_refine_boundary(self, event: EventCandidate, boundary: BoundaryResult) -> bool:
         if not self.enabled:
@@ -64,10 +71,11 @@ class LLMGate:
         signals_summary: Dict[str, Any],
         language: str = "vi",
         force: bool = False,
+        gate: str = "boundary",
     ) -> Optional[LLMRefineResult]:
         if not self.enabled:
             return None
-        if not force and not self._can_call():
+        if not self._can_call(force=force):
             return None
 
         payload = {
@@ -83,7 +91,7 @@ class LLMGate:
 
         try:
             parsed = self._call_openrouter(payload)
-            self._record_call()
+            self._record_call(gate, "ok")
             return LLMRefineResult(
                 refined_start_pts=float(parsed["refined_start_pts"]),
                 refined_end_pts=float(parsed["refined_end_pts"]),
@@ -93,12 +101,13 @@ class LLMGate:
             )
         except Exception as exc:
             logger.warning("LLMGate refine_boundary failed: %s", exc)
+            self._record_call(gate, "error")
             return None
 
     def resolve_overlap(self, pair: AmbiguousPair) -> Optional[LLMOverlapResult]:
         if not self.enabled:
             return None
-        if not self._can_call():
+        if not self._can_call(force=False):
             return None
 
         payload = {
@@ -124,7 +133,7 @@ class LLMGate:
 
         try:
             parsed = self._call_openrouter(payload)
-            self._record_call()
+            self._record_call("overlap", "ok")
             return LLMOverlapResult(
                 decision=str(parsed["decision"]),
                 confidence=float(parsed.get("confidence", 0.0)),
@@ -132,19 +141,22 @@ class LLMGate:
             )
         except Exception as exc:
             logger.warning("LLMGate resolve_overlap failed: %s", exc)
+            self._record_call("overlap", "error")
             return None
 
-    def _can_call(self) -> bool:
+    def _can_call(self, force: bool = False) -> bool:
         if not self.enabled:
             return False
 
-        now = time.time()
-        self._reset_daily_budget_if_needed(now)
-
-        if self._daily_spend_usd + ESTIMATED_COST_PER_CALL > DAILY_BUDGET_USD:
+        if not self._budget.can_call():
             logger.warning("LLMGate daily budget exceeded")
+            self._emit_metrics("budget", "budget_exceeded")
             return False
 
+        if force:
+            return True
+
+        now = time.time()
         self._prune_old_calls(now)
         if len(self._call_timestamps) >= MAX_CALLS_PER_HOUR:
             logger.warning("LLMGate hourly rate limit exceeded")
@@ -156,19 +168,23 @@ class LLMGate:
 
         return True
 
-    def _record_call(self) -> None:
+    def _record_call(self, gate: str, status: str) -> None:
         now = time.time()
-        self._reset_daily_budget_if_needed(now)
         self._prune_old_calls(now)
         self._call_timestamps.append(now)
         self._last_call_time = now
-        self._daily_spend_usd += ESTIMATED_COST_PER_CALL
+        self._budget.record_call(gate, status)
+        self._emit_metrics(gate, status)
 
-    def _reset_daily_budget_if_needed(self, now: float) -> None:
-        today = time.strftime("%Y-%m-%d", time.localtime(now))
-        if self._daily_spend_date != today:
-            self._daily_spend_date = today
-            self._daily_spend_usd = 0.0
+    def _emit_metrics(self, gate: str, status: str) -> None:
+        try:
+            from src.observability.metrics import MetricsCollector
+
+            metrics = MetricsCollector.get_instance()
+            metrics.inc_llm_call(gate, status)
+            metrics.set_llm_budget_remaining(self._budget.remaining)
+        except Exception:
+            pass
 
     def _prune_old_calls(self, now: float) -> None:
         cutoff = now - 3600

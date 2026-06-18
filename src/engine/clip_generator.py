@@ -1,17 +1,19 @@
 import subprocess
 import os
+import time
 from datetime import datetime
 from src.core.models import EventCandidate
 
 class ClipGenerator:
     def __init__(self, source_file: str, output_dir: str = "output/clips",
                  pre_roll: float = 10.0, post_roll: float = 5.0,
-                 pts_offset: float = 0.0):
+                 pts_offset: float = 0.0, metrics=None):
         self.source_file = source_file
         self.output_dir = output_dir
         self.pre_roll = pre_roll
         self.post_roll = post_roll
         self.pts_offset = pts_offset
+        self.metrics = metrics
         os.makedirs(output_dir, exist_ok=True)
 
     def _ffmpeg_copy_cmd(self, seek_pts: float, duration: float, output_path: str) -> list:
@@ -65,11 +67,23 @@ class ClipGenerator:
             f"{prefix}_{timestamp}_score{peak_score:.2f}.mp4",
         )
 
+    def _observe_generation(self, started: float) -> None:
+        if self.metrics is None:
+            return
+        try:
+            self.metrics.observe_clip_gen(time.perf_counter() - started)
+        except Exception:
+            pass
+
     def generate_draft(self, event: EventCandidate, end_pts: float) -> str:
-        output_path = self._make_output_path("draft", event)
-        cmd = self.build_draft_cmd(event, end_pts=end_pts, output_path=output_path)
-        self._run_ffmpeg(cmd)
-        return output_path
+        started = time.perf_counter()
+        try:
+            output_path = self._make_output_path("draft", event)
+            cmd = self.build_draft_cmd(event, end_pts=end_pts, output_path=output_path)
+            self._run_ffmpeg(cmd)
+            return output_path
+        finally:
+            self._observe_generation(started)
 
     def generate_final(
         self,
@@ -79,16 +93,20 @@ class ClipGenerator:
         pre_roll: float | None = None,
         post_roll: float | None = None,
     ) -> str:
-        output_path = self._make_output_path("highlight", event)
-        cmd = self.build_final_cmd(
-            start_pts=start_pts,
-            end_pts=end_pts,
-            output_path=output_path,
-            pre_roll=pre_roll,
-            post_roll=post_roll,
-        )
-        self._run_ffmpeg(cmd)
-        return output_path
+        started = time.perf_counter()
+        try:
+            output_path = self._make_output_path("highlight", event)
+            cmd = self.build_final_cmd(
+                start_pts=start_pts,
+                end_pts=end_pts,
+                output_path=output_path,
+                pre_roll=pre_roll,
+                post_roll=post_roll,
+            )
+            self._run_ffmpeg(cmd)
+            return output_path
+        finally:
+            self._observe_generation(started)
 
     def generate(self, event: EventCandidate) -> str:
         return self.generate_final(event.start_pts, event.end_pts, event)

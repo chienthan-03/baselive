@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>BaseLive — Highlight Dashboard</title>
+    <meta name="description" content="AI-powered livestream highlight review dashboard. Approve, reject, and fine-tune TikTok highlight clips in real time." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+    <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+
+<!-- Background orbs -->
+<div class="bg-orbs" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+</div>
+
+<!-- ======= HEADER ======= -->
+<header class="header" role="banner">
+    <div class="header-brand">
+        <span class="brand-icon" aria-hidden="true">⚡</span>
+        <span class="brand-name">BaseLive</span>
+        <span class="brand-badge">AI Dashboard</span>
+    </div>
+    <div class="header-status" id="header-status">
+        <span class="status-dot status-dot--live" aria-hidden="true"></span>
+        <span>Đang theo dõi</span>
+    </div>
+    <div class="header-actions">
+        <button class="btn btn-ghost" id="btn-refresh" aria-label="Làm mới danh sách">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            Làm mới
+        </button>
+    </div>
+</header>
+
+<!-- ======= MAIN LAYOUT ======= -->
+<main class="layout" role="main">
+
+    <!-- ===== LEFT: Highlight Queue ===== -->
+    <aside class="panel panel-queue" aria-label="Hàng chờ highlights">
+        <div class="panel-header">
+            <h1 class="panel-title">Hàng chờ</h1>
+            <span class="badge" id="queue-count">0</span>
+        </div>
+
+        <div class="filter-tabs" role="tablist" aria-label="Lọc theo trạng thái">
+            <button class="filter-tab active" role="tab" aria-selected="true" data-filter="all" id="tab-all">Tất cả</button>
+            <button class="filter-tab" role="tab" aria-selected="false" data-filter="PENDING" id="tab-pending">Chờ duyệt</button>
+            <button class="filter-tab" role="tab" aria-selected="false" data-filter="APPROVED" id="tab-approved">Đã duyệt</button>
+            <button class="filter-tab" role="tab" aria-selected="false" data-filter="REJECTED" id="tab-rejected">Đã từ chối</button>
+        </div>
+
+        <div class="stream-filter" role="group" aria-label="Lọc theo stream">
+            <label class="stream-filter-label" for="stream-select">Stream</label>
+            <select class="stream-select" id="stream-select" aria-label="Chọn stream">
+                <option value="all">Tất cả streams</option>
+            </select>
+        </div>
+
+        <div class="highlight-list" id="highlight-list" role="list" aria-live="polite">
+            <!-- Highlight cards rendered by JS -->
+            <div class="empty-state" id="empty-state">
+                <div class="empty-icon">🎬</div>
+                <p>Chưa có highlight nào</p>
+                <small>Hệ thống đang theo dõi livestream…</small>
+            </div>
+        </div>
+    </aside>
+
+    <!-- ===== RIGHT: Preview Panel ===== -->
+    <section class="panel panel-preview" aria-label="Xem trước highlight">
+        <div class="preview-placeholder" id="preview-placeholder">
+            <div class="preview-placeholder-icon">▶</div>
+            <p>Chọn một highlight để xem trước</p>
+        </div>
+
+        <!-- Video Player (hidden until a highlight is selected) -->
+        <div class="video-wrapper" id="video-wrapper" hidden>
+            <video id="video-player" controls preload="metadata" aria-label="Video highlight">
+                Trình duyệt không hỗ trợ video.
+            </video>
+            <div class="video-overlay-info" id="video-overlay-info"></div>
+        </div>
+
+        <!-- Detail Card (hidden until a highlight is selected) -->
+        <div class="detail-card glass" id="detail-card" hidden>
+            <div class="detail-header">
+                <div>
+                    <h2 class="detail-title" id="detail-title">Highlight #—</h2>
+                    <span class="status-badge" id="detail-status-badge">PENDING</span>
+                </div>
+                <div class="detail-score-ring" id="detail-score-ring" aria-label="Điểm highlight">
+                    <svg viewBox="0 0 44 44" class="score-svg" aria-hidden="true">
+                        <circle class="score-track" cx="22" cy="22" r="18"/>
+                        <circle class="score-fill" id="score-circle" cx="22" cy="22" r="18"/>
+                    </svg>
+                    <span class="score-label" id="score-label">—</span>
+                </div>
+            </div>
+
+            <div class="detail-meta">
+                <div class="meta-item">
+                    <span class="meta-key">Stream</span>
+                    <span class="meta-val" id="detail-stream">—</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-key">Bắt đầu</span>
+                    <span class="meta-val" id="detail-start">—</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-key">Kết thúc</span>
+                    <span class="meta-val" id="detail-end">—</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-key">Thời lượng</span>
+                    <span class="meta-val" id="detail-duration">—</span>
+                </div>
+            </div>
+
+            <!-- Boundary Adjuster -->
+            <div class="adjuster glass-inner">
+                <h3 class="adjuster-title">Tinh chỉnh ranh giới</h3>
+                <div class="slider-row">
+                    <label for="slider-start" class="slider-label">Pre-roll (s)</label>
+                    <input type="range" id="slider-start" class="slider" min="-30" max="0" value="0" step="0.5" aria-label="Điều chỉnh điểm bắt đầu" />
+                    <span class="slider-value" id="slider-start-val">0s</span>
+                </div>
+                <div class="slider-row">
+                    <label for="slider-end" class="slider-label">Post-roll (s)</label>
+                    <input type="range" id="slider-end" class="slider" min="0" max="30" value="0" step="0.5" aria-label="Điều chỉnh điểm kết thúc"/>
+                    <span class="slider-value" id="slider-end-val">0s</span>
+                </div>
+                <button class="btn btn-secondary btn-sm" id="btn-adjust" aria-label="Áp dụng ranh giới mới">
+                    Áp dụng ranh giới
+                </button>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="action-row">
+                <button class="btn btn-reject" id="btn-reject" aria-label="Từ chối highlight">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                    Từ chối
+                </button>
+                <button class="btn btn-approve" id="btn-approve" aria-label="Phê duyệt highlight">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg>
+                    Phê duyệt
+                </button>
+            </div>
+        </div>
+    </section>
+</main>
+
+<!-- Toast notification -->
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

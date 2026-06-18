@@ -13,6 +13,8 @@ from src.buffer.circular_buffer import TranscriptBuffer
 from src.buffer.signal_history import SignalHistoryBuffer
 from src.db.database import Database
 
+NOISE_FLOOR = 0.02
+
 
 class MasterPipeline:
     def __init__(
@@ -42,6 +44,7 @@ class MasterPipeline:
         self.stream_id = stream_id
         self.highlight_processor = highlight_processor
         self.transcript_buffer = transcript_buffer
+        self._quiet_streak = 0
 
     def process_chunk(
         self,
@@ -50,6 +53,7 @@ class MasterPipeline:
         chat_messages: List[Dict],
         transcript: List[Dict] = None,
         clip_source: str = "",
+        video_signals: Optional[Dict] = None,
     ) -> Optional[ClosedEventInfo]:
         if clip_source:
             if self.clip_generator is None:
@@ -59,7 +63,16 @@ class MasterPipeline:
 
         prev_state = self.state_machine.current_event.state
 
-        audio_res = self.audio_analyzer.analyze_chunk(audio_data)
+        raw_rms = self.audio_analyzer._compute_rms(audio_data)
+        if raw_rms < NOISE_FLOOR:
+            self._quiet_streak += 1
+        else:
+            self._quiet_streak = 0
+
+        audio_res = self.audio_analyzer.analyze_chunk(
+            audio_data,
+            run_full_dsp=self._quiet_streak < 5,
+        )
         chat_res = self.chat_analyzer.analyze_batch(chat_messages)
 
         stt_res = None
@@ -84,6 +97,12 @@ class MasterPipeline:
                 if kw not in keywords:
                     keywords.append(kw)
 
+        video_scene_change = 0.0
+        video_motion = 0.0
+        if video_signals:
+            video_scene_change = float(video_signals.get("video_scene_change", 0.0))
+            video_motion = float(video_signals.get("video_motion", 0.0))
+
         snapshot = SignalSnapshot(
             pts=pts,
             audio_energy=audio_res["energy_score"],
@@ -101,6 +120,8 @@ class MasterPipeline:
             chat_emoji_scores=chat_res["chat_emoji_scores"],
             chat_keyword_cluster=chat_res.get("chat_keyword_cluster"),
             gift_event=chat_res.get("gift_event"),
+            video_scene_change=video_scene_change,
+            video_motion=video_motion,
         )
 
         self.aggregator.compute_score(snapshot)
@@ -158,6 +179,8 @@ class MasterPipeline:
                     peak_pts=ev.peak_pts,
                 )
                 ev.draft_highlight_id = highlight_id
+                if self.highlight_processor is not None:
+                    self.highlight_processor.record_highlight_created("DRAFT")
         elif new_state == "ACTIVE" and ev.draft_highlight_id is not None and self.db:
             self.db.update_highlight(
                 ev.draft_highlight_id,

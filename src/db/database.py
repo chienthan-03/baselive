@@ -68,6 +68,17 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS streams (
+                stream_id TEXT PRIMARY KEY,
+                platform TEXT,
+                url TEXT,
+                status TEXT,
+                node_id TEXT,
+                started_at REAL,
+                ended_at REAL
+            )
+        ''')
         self.conn.commit()
         logger.info("Database initialized successfully.")
 
@@ -244,6 +255,69 @@ class Database:
         cursor.execute(
             "SELECT * FROM highlight_feedback WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC",
             (f"-{hours} hours",),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def upsert_stream(
+        self,
+        stream_id: str,
+        *,
+        platform: str,
+        url: str,
+        status: str,
+        node_id: str,
+        started_at: float,
+        ended_at: Optional[float] = None,
+    ):
+        """Insert or replace a stream record."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO streams (stream_id, platform, url, status, node_id, started_at, ended_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stream_id) DO UPDATE SET
+                platform = excluded.platform,
+                url = excluded.url,
+                status = excluded.status,
+                node_id = excluded.node_id,
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at
+        ''', (stream_id, platform, url, status, node_id, started_at, ended_at))
+        self.conn.commit()
+
+    def get_stream(self, stream_id: str) -> Optional[Dict]:
+        """Retrieves a single stream by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM streams WHERE stream_id = ?", (stream_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_stream_status(
+        self,
+        stream_id: str,
+        status: str,
+        *,
+        ended_at: Optional[float] = None,
+    ):
+        """Updates the status (and optionally ended_at) of a stream."""
+        cursor = self.conn.cursor()
+        if ended_at is not None:
+            cursor.execute(
+                "UPDATE streams SET status = ?, ended_at = ? WHERE stream_id = ?",
+                (status, ended_at, stream_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE streams SET status = ? WHERE stream_id = ?",
+                (status, stream_id),
+            )
+        self.conn.commit()
+
+    def list_streams_by_status(self, status: str) -> List[Dict]:
+        """Retrieves all streams with the given status."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM streams WHERE status = ? ORDER BY started_at DESC",
+            (status,),
         )
         return [dict(row) for row in cursor.fetchall()]
 

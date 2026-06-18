@@ -27,8 +27,8 @@
         <span class="brand-badge">AI Dashboard</span>
     </div>
     <div class="header-status" id="header-status">
-        <span class="status-dot status-dot--live" aria-hidden="true"></span>
-        <span>Đang theo dõi</span>
+        <span class="status-dot status-dot--unknown" id="health-status-dot" role="status" aria-label="Trạng thái hệ thống: đang kiểm tra"></span>
+        <span id="health-status-label">Đang kiểm tra…</span>
     </div>
     <div class="header-actions">
         <button class="btn btn-ghost" id="btn-refresh" aria-label="Làm mới danh sách">
@@ -53,6 +53,13 @@
             <button class="filter-tab" role="tab" aria-selected="false" data-filter="PENDING" id="tab-pending">Chờ duyệt</button>
             <button class="filter-tab" role="tab" aria-selected="false" data-filter="APPROVED" id="tab-approved">Đã duyệt</button>
             <button class="filter-tab" role="tab" aria-selected="false" data-filter="REJECTED" id="tab-rejected">Đã từ chối</button>
+        </div>
+
+        <div class="stream-filter" role="group" aria-label="Lọc theo stream">
+            <label class="stream-filter-label" for="stream-select">Stream</label>
+            <select class="stream-select" id="stream-select" aria-label="Chọn stream">
+                <option value="all">Tất cả streams</option>
+            </select>
         </div>
 
         <div class="stream-filter" role="group" aria-label="Lọc theo stream">

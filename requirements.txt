@@ -1,0 +1,9 @@
+fastapi>=0.137.0
+httpx>=0.28.0
+numpy>=2.4.0
+prometheus_client>=0.20.0
+pydantic>=2.13.0
+pytest>=9.1.0
+python-multipart>=0.0.32
+uvicorn>=0.49.0
+# opencv-python-headless>=4.10.0  # optional: CPU video frame analysis (Phase 3d)

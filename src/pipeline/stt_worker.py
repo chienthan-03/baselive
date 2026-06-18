@@ -1,13 +1,15 @@
 import numpy as np
+import time
 
 from src.core.models import TranscriptResult, TranscriptSegment
 
 
 class STTWorker:
-    def __init__(self, model_size: str = "small", device: str = "cpu"):
+    def __init__(self, model_size: str = "small", device: str = "cpu", metrics=None):
         self.model_size = model_size
         self.device = device
         self.model = None
+        self._metrics = metrics
 
     @property
     def enabled(self) -> bool:
@@ -29,26 +31,34 @@ class STTWorker:
                 chunk_start_pts=chunk_start_pts,
             )
 
-        segments_iter, info = self.model.transcribe(audio_data, language="vi", beam_size=1)
-        segments: list[TranscriptSegment] = []
-        text_parts: list[str] = []
-        for segment in segments_iter:
-            confidence = min(1.0, max(0.0, 1.0 + segment.avg_logprob))
-            segments.append(
-                TranscriptSegment(
-                    start=segment.start,
-                    end=segment.end,
-                    text=segment.text,
-                    confidence=confidence,
+        started = time.perf_counter()
+        try:
+            segments_iter, info = self.model.transcribe(audio_data, language="vi", beam_size=1)
+            segments: list[TranscriptSegment] = []
+            text_parts: list[str] = []
+            for segment in segments_iter:
+                confidence = min(1.0, max(0.0, 1.0 + segment.avg_logprob))
+                segments.append(
+                    TranscriptSegment(
+                        start=segment.start,
+                        end=segment.end,
+                        text=segment.text,
+                        confidence=confidence,
+                    )
                 )
+                text_parts.append(segment.text)
+
+            language = getattr(info, "language", "vi") if info else "vi"
+
+            return TranscriptResult(
+                text=" ".join(text_parts).strip(),
+                segments=segments,
+                language=language,
+                chunk_start_pts=chunk_start_pts,
             )
-            text_parts.append(segment.text)
-
-        language = getattr(info, "language", "vi") if info else "vi"
-
-        return TranscriptResult(
-            text=" ".join(text_parts).strip(),
-            segments=segments,
-            language=language,
-            chunk_start_pts=chunk_start_pts,
-        )
+        finally:
+            if self._metrics is not None:
+                try:
+                    self._metrics.observe_stt(time.perf_counter() - started)
+                except Exception:
+                    pass
