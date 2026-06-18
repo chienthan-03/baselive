@@ -43,3 +43,16 @@ def test_clip_includes_pre_post_roll():
     # Duration should be (90.0 - 60.0) + 10.0 + 5.0 = 45.0
     t_index = call_args.index("-t")
     assert float(call_args[t_index + 1]) == pytest.approx(45.0)
+
+
+def test_clip_generator_applies_pts_offset():
+    gen = ClipGenerator(
+        source_file="live.mp4",
+        output_dir="out",
+        pts_offset=100.0,
+        pre_roll=10.0,
+    )
+    event = EventCandidate(start_pts=120.0, end_pts=130.0, peak_score=0.8)
+    cmd = gen.build_ffmpeg_cmd(event, "out/test.mp4")
+    ss_index = cmd.index("-ss")
+    assert float(cmd[ss_index + 1]) == pytest.approx(10.0)
