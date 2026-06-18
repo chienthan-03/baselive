@@ -67,6 +67,18 @@ def test_stream_recorder_stop_terminates_process():
     mock_proc.terminate.assert_called_once()
 
 
+def test_stream_recorder_exposes_video_path(tmp_path):
+    audio_buffer = AudioRingBuffer(capacity_sec=60, sample_rate=16000)
+    recorder = StreamRecorder(
+        url="https://tiktok.com/@test/live",
+        audio_buffer=audio_buffer,
+        stream_id="test_stream",
+        video_output_dir=str(tmp_path),
+    )
+    assert recorder.video_path.endswith("live.mp4")
+    assert str(tmp_path) in recorder.video_path
+
+
 def test_stream_recorder_is_running_false_before_start():
     """StreamRecorder should report is_running=False before start() is called."""
     audio_buffer = AudioRingBuffer(capacity_sec=60, sample_rate=16000)

@@ -2,6 +2,7 @@
 StreamRecorder: Pulls a livestream via yt-dlp piped through FFmpeg,
 reads raw PCM float32 audio from stdout, and feeds it into an AudioRingBuffer.
 """
+import os
 import subprocess
 import threading
 import logging
@@ -12,17 +13,21 @@ from src.buffer.circular_buffer import AudioRingBuffer
 
 logger = logging.getLogger(__name__)
 
-# FFmpeg command template — reads stdin (from yt-dlp pipe) and outputs
-# raw float32 PCM to stdout at 16kHz mono.
-_FFMPEG_CMD = [
+# FFmpeg reads stdin (from yt-dlp pipe) and outputs:
+#   - raw float32 PCM to stdout at 16kHz mono
+#   - video copy to disk (path supplied at launch time)
+_FFMPEG_CMD_PREFIX = [
     "ffmpeg",
     "-loglevel", "error",
     "-i", "pipe:0",         # stdin from yt-dlp
-    "-vn",                  # no video
+    "-map", "0:a",
     "-ar", "16000",         # 16kHz sample rate
     "-ac", "1",             # mono
     "-f", "f32le",          # float32 little-endian PCM
     "pipe:1",               # stdout
+    "-map", "0:v",
+    "-c:v", "copy",
+    "-movflags", "+frag_keyframe+empty_moov",
 ]
 
 _YTDLP_CMD_TEMPLATE = [
@@ -53,12 +58,20 @@ class StreamRecorder:
         segment_dir: str = "output/segments",
         chunk_duration_s: float = 5.0,
         sample_rate: int = 16000,
+        stream_id: str = "default",
+        video_output_dir: str = "output/streams",
     ):
         self.url = url
         self.audio_buffer = audio_buffer
         self.segment_dir = segment_dir
         self.chunk_duration_s = chunk_duration_s
         self.sample_rate = sample_rate
+        self.stream_id = stream_id
+        self.video_output_dir = video_output_dir
+
+        os.makedirs(os.path.join(video_output_dir, stream_id), exist_ok=True)
+        self.video_path = os.path.join(video_output_dir, stream_id, "live.mp4")
+        self.pts_offset: float = 0.0
 
         self._ffmpeg_proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
@@ -110,7 +123,7 @@ class StreamRecorder:
                 stderr=subprocess.DEVNULL,
             )
             self._ffmpeg_proc = subprocess.Popen(
-                _FFMPEG_CMD,
+                _FFMPEG_CMD_PREFIX + [self.video_path],
                 stdin=ytdlp_proc.stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
