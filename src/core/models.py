@@ -37,6 +37,7 @@ class EventCandidate:
     peak_pts: float = 0.0
     peak_score: float = 0.0
     below_close_since: float = 0.0
+    signals: List[SignalSnapshot] = field(default_factory=list)
 
 @dataclass
 class TranscriptSegment:
