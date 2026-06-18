@@ -1,7 +1,7 @@
 # MVP Implementation Plan — BaseLive Highlight Extraction
 
-> **Status:** ✅ Phase 1 hoàn tất (Phases 1.1 → 1.6)
-> **Tests:** 30/30 passing
+> **Status:** ✅ Phase 1 hoàn tất (Phases 1.1 → 1.7)
+> **Tests:** 47/47 passing
 
 ---
 
@@ -248,7 +248,27 @@
 | 1.4 | Clip Generator | 4 tests | ✅ |
 | 1.5 | Data Ingestion (StreamRecorder, ChatCollector, StreamWorker, Bridge) | 9 tests | ✅ |
 | 1.6 | Web Dashboard (SQLite, FastAPI, Premium UI) | 8 tests | ✅ |
-| **TỔNG** | | **30/30** | **✅ DONE** |
+| 1.7 | MVP Signal Layer ([plan](2026-06-18-mvp-signal-layer-plan.md)) | 17 tests | ✅ |
+| **TỔNG** | | **47/47** | **✅ DONE** |
+
+## Phase 1.7: MVP Signal Layer Completion ✅ DONE
+
+**Goal:** Hoàn thiện signal layer — nối STT, mở rộng DSP/chat, scoring đầy đủ, rolling video file, và harden state machine.
+
+**Plan:** [2026-06-18-mvp-signal-layer-plan.md](2026-06-18-mvp-signal-layer-plan.md)
+
+| Sub-phase | Nội dung | Status |
+|-----------|----------|--------|
+| 1.7a | StreamRecorder rolling video + rotation | ✅ |
+| 1.7b | STT integration + STTAnalyzer | ✅ |
+| 1.7c | Audio DSP extensions (pitch, laughter, overlap) | ✅ |
+| 1.7d | Chat Analyzer full (emoji, gift, spam) | ✅ |
+| 1.7e | Extended SignalSnapshot + Aggregator rewrite | ✅ |
+| 1.7f | StateMachine extraction + full pipeline wiring | ✅ |
+
+**Tests:** 47/47 passing (+17 new tests from Phase 1.7)
+
+---
 
 ### Khởi chạy Dashboard
 
