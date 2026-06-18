@@ -141,6 +141,14 @@ def test_event_candidate_draft_fields():
 
 Add: `BoundaryResult`, `ResolvedEvent`, `AmbiguousPair`, `ResolutionResult`, `MicroHighlight`, `ThresholdSet`. Extend `EventCandidate` with `draft_highlight_id`, `refined_start_pts`, `refined_end_pts`, `content_type`, `quality`, `is_growing`.
 
+Add `EventHistoryStore` (deque max 10):
+```python
+class EventHistoryStore:
+    def append(self, event: ResolvedEvent) -> None: ...
+    def get_overlapping(self, start_pts: float, end_pts: float) -> List[ResolvedEvent]: ...
+    def contains_pts(self, pts: float) -> Optional[ResolvedEvent]: ...
+```
+
 - [ ] **Step 4: Run test — expect PASS**
 
 - [ ] **Step 5: Commit**
@@ -335,8 +343,9 @@ def test_pipeline_does_not_duplicate_draft_on_peak_update(mock_db):
 - Wire `SignalHistoryBuffer.append()` each tick
 - Detect `prev_state == "OPENING" and new_state == "ACTIVE"` → insert DRAFT once, set `draft_highlight_id`
 - While ACTIVE: update same row score/peak_pts; regenerate draft clip every 30s
-- On CLOSED: set `is_growing=0`, do NOT generate final clip yet (HighlightProcessor handles in Task 10)
-- Reset `StateMachine.current_event = EventCandidate()` after CLOSED processing completes
+- On CLOSED: set `is_growing=0` on DRAFT row only — **remove legacy block** that calls `clip_generator.generate()` + `db.insert_highlight()` on CLOSED (current `pipeline.py` lines ~99–114)
+- Return `ClosedEventInfo(event, resolution_pts)` from `process_chunk()` when CLOSED detected so `StreamWorker` can run look-forward + `HighlightProcessor.on_event_closed()`
+- Reset `StateMachine.current_event = EventCandidate()` after HighlightProcessor completes (Task 9)
 
 - [ ] **Step 5: Commit**
 
@@ -414,10 +423,15 @@ def test_highlight_processor_on_closed_enqueues_event():
 
 - [ ] **Step 2–4: Implement stub `HighlightProcessor`**
 
-- `EventHistoryStore`, `PendingEventQueue` (minimal enqueue/drain for now)
+**Integration contract:**
+- `MasterPipeline.__init__` accepts optional `highlight_processor: HighlightProcessor`
+- `process_chunk()` returns `Optional[ClosedEventInfo]` when state transitions to CLOSED
+- `StreamWorker` loop: if `closed_info` returned → blocking `look_forward` (re-call `process_chunk` every 5s until resolution or 120s timeout) → `highlight_processor.on_event_closed(closed_info, buffers...)` → reset state machine
+- `HighlightProcessor` constructed in `StreamWorker` with shared `SignalHistoryBuffer`, `TranscriptBuffer`, `ClipGenerator`, `Database`
+
+- `EventHistoryStore`, `PendingEventQueue` (minimal enqueue/drain — refactored to `pending_event_queue.py` in Task 12)
 - `on_event_closed()`: expand boundary → enqueue → process if ready
 - `process_pending_queue()` stub: upgrade DRAFT→FINAL with rule-based boundary only (no resolver/split yet)
-- `StreamWorker`: after CLOSED detected, blocking look_forward loop (poll every 5s tick until resolution or timeout)
 
 - [ ] **Step 5: Commit**
 
@@ -454,7 +468,32 @@ def test_get_highlights_filter_by_type(client, db_with_draft_and_final):
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(2a): add Draft/Final dashboard UI and API filters"
+git commit -m "feat(2a): add Draft/Final dashboard UI, API filters, and llm-analyze endpoint"
+```
+
+---
+
+### Task 10b: LLM analyze API endpoint
+
+**Files:**
+- Modify: `src/api/main.py`
+- Modify: `tests/api/test_routes.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_llm_analyze_endpoint(client, mock_llm_gate, final_highlight):
+    resp = client.post(f"/api/highlights/{final_highlight}/llm-analyze")
+    assert resp.status_code == 200
+    assert "refined_start_pts" in resp.json()
+```
+
+- [ ] **Step 2–4: Implement `POST /api/highlights/{id}/llm-analyze`** calling `LLMGate.refine_boundary()` with editor trigger (spec §4.3 Pass 1c)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(2a): add editor-triggered llm-analyze API endpoint"
 ```
 
 ---
@@ -488,6 +527,7 @@ git commit -m "test(2a): integration smoke test for Draft/Final lifecycle"
 
 **Files:**
 - Create: `src/engine/pending_event_queue.py`
+- Modify: `src/engine/highlight_processor.py` (refactor inline stub from Task 9)
 - Create: `tests/engine/test_pending_event_queue.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -587,7 +627,7 @@ def test_split_long_event_into_micro_highlights(history_multi_peak):
 
 - [ ] **Step 2–4: Implement multi-peak detection + TikTok duration targets**
 
-Build `score_curve` from `SignalHistoryBuffer.get_range()`.
+Build `score_curve` from `SignalHistoryBuffer.get_range()`. When splitting, use TikTok rolls `pre_roll=2s`, `post_roll=1s` in `ClipGenerator.generate_final()` for micro-highlights.
 
 - [ ] **Step 5: Commit**
 
@@ -657,7 +697,13 @@ def test_phase2_uses_percentiles(rolling_stats_with_scores):
 
 - [ ] **Step 2–4: Implement 3-tier strategy per spec §4.7**
 
-Load `config/global_prior.json` on init.
+Load `config/global_prior.json` on init. Seed file:
+```json
+{
+  "open_thr": 0.5, "confirm_thr": 0.65, "close_thr": 0.25, "peak_thr": 0.8,
+  "audio_energy_mean": 0.05, "chat_volume_mean": 8.0, "speaking_rate_mean": 3.5
+}
+```
 
 - [ ] **Step 5: Commit**
 
@@ -686,6 +732,8 @@ def test_state_machine_uses_dynamic_thresholds():
 
 - [ ] **Step 2–4: Pass `ThresholdSet` into `process()` from `BaselineCalibrator`**
 
+In `MasterPipeline`: maintain `RollingStats` deque of composite scores (5-min window). Each tick: `elapsed_sec = pts - stream_start_pts` → `calibrator.get_thresholds(elapsed_sec, rolling_stats)`. Every 30s in phase 2: call `calibrator.recalibrate()`. On `detect_activity_change()`: reset window per spec §4.7.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -709,9 +757,16 @@ def test_reject_with_reason_writes_feedback(client, db):
     hid = db.insert_highlight(...)
     resp = client.post(f"/api/highlights/{hid}/reject", json={"reason": "false_positive"})
     assert resp.status_code == 200
-  feedback = db.get_feedback_for_highlight(hid)
+    feedback = db.get_feedback_for_highlight(hid)
     assert feedback[0]["action"] == "REJECT"
     assert feedback[0]["reject_reason"] == "false_positive"
+
+def test_approve_writes_accept_feedback(client, db):
+    hid = db.insert_highlight(...)
+    resp = client.post(f"/api/highlights/{hid}/approve")
+    feedback = db.get_feedback_for_highlight(hid)
+    assert feedback[0]["action"] == "ACCEPT"
+    assert feedback[0]["start_delta_sec"] == 0
 ```
 
 - [ ] **Step 2–4: Create `highlight_feedback` table; update approve/reject/adjust endpoints**
@@ -752,7 +807,11 @@ def test_learner_adjusts_pre_roll(db_enough_modify_feedback):
 
 - [ ] **Step 2–4: Implement daily batch per spec §4.8**
 
-Write learned values to `config/stream_config.json` and `config/global_prior.json`.
+Write learned values to `config/stream_config.json`:
+```json
+{ "stream_id": { "pre_roll": 12.0, "post_roll": 6.0, "open_thr": 0.55 } }
+```
+and update `config/global_prior.json` for global defaults.
 
 - [ ] **Step 5: Commit**
 
@@ -843,6 +902,19 @@ def test_stream_manager_max_concurrent():
 def test_api_start_stream(client):
     resp = client.post("/api/streams/start", json={"url": "http://test", "stream_id": "s1"})
     assert resp.status_code == 200
+
+def test_api_list_and_stop_stream(client):
+    client.post("/api/streams/start", json={"url": "http://test", "stream_id": "s1"})
+    resp = client.get("/api/streams")
+    assert "s1" in [s["stream_id"] for s in resp.json()]
+    resp = client.post("/api/streams/s1/stop")
+    assert resp.status_code == 200
+
+def test_api_start_stream_429_at_capacity(client):
+    for i in range(3):
+        client.post("/api/streams/start", json={"url": f"http://test{i}", "stream_id": f"s{i}"})
+    resp = client.post("/api/streams/start", json={"url": "http://test4", "stream_id": "s4"})
+    assert resp.status_code == 429
 ```
 
 - [ ] **Step 2–4: Implement StreamManager with thread-per-worker**
@@ -882,11 +954,11 @@ git commit -m "feat(2d): stream filter UI and Phase 2 Beta complete"
 
 | Sub-phase | Nội dung | Tasks |
 |---|---|---|
-| 2a | SignalHistory, ContextExpander, LLMGate, Draft/Final | Tasks 1–11 |
+| 2a | SignalHistory, ContextExpander, LLMGate, Draft/Final | Tasks 1–11, 10b |
 | 2c | PendingQueue, EventResolver, EventSplitter, Processor | Tasks 12–15 |
 | 2b | BaselineCalibrator, FeedbackLearner, reject UI | Tasks 16–20 |
 | 2d | ChatLag, StreamManager | Tasks 21–23 |
-| **TỔNG** | | **23 tasks** |
+| **TỔNG** | | **24 tasks** |
 
 ### Không nằm trong plan này
 
@@ -894,6 +966,10 @@ git commit -m "feat(2d): stream filter UI and Phase 2 Beta complete"
 - Embedding-based topic detection (Phase 4)
 - VideoBuffer TS segments
 - Text overlay for partial context clips
+
+### Test fixtures note
+
+Tasks 3–4 reference fixtures (`history_with_silence`, `history_declining`, `history_multi_peak`, `mock_openrouter`). Define these in `tests/conftest.py` or the respective test modules before running those tests.
 
 ### Environment setup
 
