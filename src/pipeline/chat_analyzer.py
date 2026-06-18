@@ -1,6 +1,8 @@
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 
+from src.pipeline.chat_lag import ChatLagCompensator
+
 EMOJI_FUNNY = {"😂", "🤣", "💀", "😆"}
 EMOJI_SHOCK = {"😱", "😨", "🤯"}
 EMOJI_LOVE = {"❤️", "😍", "🥰"}
@@ -14,9 +16,13 @@ KEYWORD_CLUSTERS = {
 
 
 class ChatAnalyzer:
-    def __init__(self):
+    def __init__(self, lag_compensator: Optional[ChatLagCompensator] = None):
         self.keywords = ["haha", "hay", "ảo", "cháy", "vcl", "clm", "lol"]
         self.baseline_volume = 1.0
+        self.lag_compensator = lag_compensator
+
+    def _effective_pts(self, m: Dict) -> float:
+        return m.get("adjusted_pts", m.get("pts", 0.0))
 
     def _normalize_text(self, m: Dict) -> str:
         return m.get("content") or m.get("msg", "")
@@ -46,11 +52,11 @@ class ChatAnalyzer:
         kept: List[Dict] = []
         dropped_ids = set()
         for user_msgs in by_user.values():
-            sorted_msgs = sorted(user_msgs, key=lambda m: m.get("pts", 0.0))
+            sorted_msgs = sorted(user_msgs, key=self._effective_pts)
             window: List[Dict] = []
             for m in sorted_msgs:
-                pts = m.get("pts", 0.0)
-                window = [w for w in window if pts - w.get("pts", 0.0) <= 5.0]
+                pts = self._effective_pts(m)
+                window = [w for w in window if pts - self._effective_pts(w) <= 5.0]
                 if len(window) >= 5:
                     dropped_ids.add(id(m))
                 else:
@@ -102,6 +108,10 @@ class ChatAnalyzer:
         return best_cluster
 
     def analyze_batch(self, messages: List[Dict]) -> dict:
+        if self.lag_compensator is not None:
+            for msg in messages:
+                self.lag_compensator.adjust_message(msg)
+
         filtered = self._filter_spam(messages)
         volume = len(filtered)
 

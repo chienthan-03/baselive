@@ -10,6 +10,11 @@ def test_db():
     yield db
     db.close()
 
+
+@pytest.fixture
+def tmp_db(test_db):
+    return test_db
+
 def test_database_initializes_tables(test_db):
     """Database init_db() should create the 'highlights' table."""
     cursor = test_db.conn.cursor()
@@ -59,3 +64,41 @@ def test_update_highlight_boundaries(test_db):
     h = test_db.get_highlight(h_id)
     assert h["start_pts"] == 5.0
     assert h["end_pts"] == 25.0
+
+
+def test_insert_feedback(test_db):
+    """Should insert and retrieve highlight feedback."""
+    h_id = test_db.insert_highlight(
+        stream_id="s1",
+        start_pts=10.0,
+        end_pts=20.0,
+        score=0.9,
+        ai_start_pts=10.0,
+        ai_end_pts=20.0,
+        content_type="funny",
+    )
+    test_db.insert_feedback(
+        highlight_id=h_id,
+        stream_id="s1",
+        action="REJECT",
+        ai_start_pts=10.0,
+        ai_end_pts=20.0,
+        ai_score=0.9,
+        reject_reason="false_positive",
+        content_type="funny",
+    )
+    feedback = test_db.get_feedback_for_highlight(h_id)
+    assert len(feedback) == 1
+    assert feedback[0]["action"] == "REJECT"
+    assert feedback[0]["reject_reason"] == "false_positive"
+    assert feedback[0]["content_type"] == "funny"
+
+
+def test_insert_draft_highlight(tmp_db):
+    hid = tmp_db.insert_highlight(
+        stream_id="s1", start_pts=10.0, end_pts=50.0, score=0.8,
+        highlight_type="DRAFT", is_growing=1, peak_pts=30.0,
+    )
+    row = tmp_db.get_highlight(hid)
+    assert row["highlight_type"] == "DRAFT"
+    assert row["is_growing"] == 1

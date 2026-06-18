@@ -1,6 +1,6 @@
 from typing import Optional
 
-from src.core.models import EventCandidate, SignalSnapshot
+from src.core.models import EventCandidate, SignalSnapshot, ThresholdSet
 
 
 class StateMachine:
@@ -19,20 +19,24 @@ class StateMachine:
         self,
         snapshot: SignalSnapshot,
         chat_volume_ratio: Optional[float] = None,
+        thresholds: Optional[ThresholdSet] = None,
     ):
         self.current_event.signals.append(snapshot)
 
         score = snapshot.composite_score
         pts = snapshot.pts
         ev = self.current_event
+        open_thr = thresholds.open_thr if thresholds else self.OPEN_THR
+        confirm_thr = thresholds.confirm_thr if thresholds else self.CONFIRM_THR
+        close_thr = thresholds.close_thr if thresholds else self.CLOSE_THR
 
         if ev.state == "IDLE":
-            if score > self.OPEN_THR:
+            if score > open_thr:
                 ev.state = "OPENING"
                 ev.start_pts = pts
 
         elif ev.state == "OPENING":
-            if score > self.CONFIRM_THR:
+            if score > confirm_thr:
                 ev.state = "ACTIVE"
                 ev.peak_score = score
                 ev.peak_pts = pts
@@ -49,7 +53,7 @@ class StateMachine:
                 ev.end_pts = pts
                 return
 
-            if score < self.CLOSE_THR:
+            if score < close_thr:
                 if ev.below_close_since == 0.0:
                     ev.below_close_since = pts
                 elif pts - ev.below_close_since >= self.CLOSE_COOLDOWN:

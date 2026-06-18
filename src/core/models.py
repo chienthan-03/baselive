@@ -1,5 +1,6 @@
+from collections import deque
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import Deque, List, Optional, Dict
 
 @dataclass
 class SignalSnapshot:
@@ -30,6 +31,11 @@ class SignalSnapshot:
     composite_score: float = 0.0
 
 @dataclass
+class ClosedEventInfo:
+    event: "EventCandidate"
+    close_pts: float
+
+@dataclass
 class EventCandidate:
     state: str = "IDLE"
     start_pts: float = 0.0
@@ -38,6 +44,82 @@ class EventCandidate:
     peak_score: float = 0.0
     below_close_since: float = 0.0
     signals: List[SignalSnapshot] = field(default_factory=list)
+    draft_highlight_id: Optional[int] = None
+    refined_start_pts: Optional[float] = None
+    refined_end_pts: Optional[float] = None
+    content_type: Optional[str] = None
+    quality: str = "partial"
+    is_growing: bool = False
+
+@dataclass
+class BoundaryResult:
+    trigger_pts: float
+    resolution_pts: float
+    peak_pts: float
+    quality: str
+    context_status: str
+    stop_reason: str
+
+@dataclass
+class ResolvedEvent:
+    start_pts: float
+    end_pts: float
+    peak_pts: float
+    peak_score: float
+    keywords: List[str]
+    transcript_excerpt: str
+    draft_highlight_id: Optional[int] = None
+    sub_events: List["ResolvedEvent"] = field(default_factory=list)
+
+@dataclass
+class AmbiguousPair:
+    event_a: ResolvedEvent
+    event_b: ResolvedEvent
+    similarity: float
+
+@dataclass
+class ResolutionResult:
+    events: List[ResolvedEvent]
+    ambiguous_pairs: List[AmbiguousPair]
+
+@dataclass
+class MicroHighlight:
+    start_pts: float
+    end_pts: float
+    peak_pts: float
+    peak_score: float
+    parent_id: Optional[int] = None
+    pre_roll: Optional[float] = None
+    post_roll: Optional[float] = None
+
+@dataclass
+class ThresholdSet:
+    open_thr: float
+    confirm_thr: float
+    close_thr: float
+    peak_thr: float
+
+class EventHistoryStore:
+    max_size: int = 10
+
+    def __init__(self, max_size: int = 10):
+        self.max_size = max_size
+        self._events: Deque[ResolvedEvent] = deque(maxlen=max_size)
+
+    def append(self, event: ResolvedEvent) -> None:
+        self._events.append(event)
+
+    def get_overlapping(self, start_pts: float, end_pts: float) -> List[ResolvedEvent]:
+        return [
+            e for e in self._events
+            if start_pts <= e.end_pts and end_pts >= e.start_pts
+        ]
+
+    def contains_pts(self, pts: float) -> Optional[ResolvedEvent]:
+        for event in reversed(self._events):
+            if event.start_pts <= pts <= event.end_pts:
+                return event
+        return None
 
 @dataclass
 class TranscriptSegment:

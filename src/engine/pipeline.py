@@ -1,13 +1,16 @@
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from src.pipeline.audio_dsp import AudioAnalyzer
 from src.pipeline.chat_analyzer import ChatAnalyzer
 from src.pipeline.stt_analyzer import STTAnalyzer
 from src.engine.aggregator import SignalAggregator
 from src.engine.clip_generator import ClipGenerator
-from src.core.models import SignalSnapshot, TranscriptResult
+from src.core.models import SignalSnapshot, TranscriptResult, ClosedEventInfo
 from src.engine.state_machine import StateMachine
+from src.engine.baseline_calibrator import BaselineCalibrator, RollingStats
+from src.buffer.circular_buffer import TranscriptBuffer
+from src.buffer.signal_history import SignalHistoryBuffer
 from src.db.database import Database
 
 
@@ -19,16 +22,26 @@ class MasterPipeline:
         db: Database = None,
         stream_id: str = "default",
         stt_enabled: bool = True,
+        highlight_processor=None,
+        transcript_buffer: TranscriptBuffer = None,
     ):
         self.audio_analyzer = AudioAnalyzer()
         self.chat_analyzer = ChatAnalyzer()
         self.stt_analyzer = STTAnalyzer()
         self.aggregator = SignalAggregator(stt_enabled=stt_enabled)
         self.state_machine = StateMachine()
+        self.calibrator = BaselineCalibrator()
+        self.rolling_stats = RollingStats()
+        self.rolling_stats_1min = RollingStats(window_sec=60)
+        self.stream_start_pts: Optional[float] = None
+        self._last_recalibrate_pts: Optional[float] = None
+        self.signal_history = SignalHistoryBuffer()
         self.output_dir = output_dir
         self.clip_generator = ClipGenerator(clip_source, output_dir) if clip_source else None
         self.db = db
         self.stream_id = stream_id
+        self.highlight_processor = highlight_processor
+        self.transcript_buffer = transcript_buffer
 
     def process_chunk(
         self,
@@ -37,7 +50,7 @@ class MasterPipeline:
         chat_messages: List[Dict],
         transcript: List[Dict] = None,
         clip_source: str = "",
-    ) -> None:
+    ) -> Optional[ClosedEventInfo]:
         if clip_source:
             if self.clip_generator is None:
                 self.clip_generator = ClipGenerator(clip_source, self.output_dir)
@@ -91,24 +104,89 @@ class MasterPipeline:
         )
 
         self.aggregator.compute_score(snapshot)
+        self.signal_history.append(snapshot)
+
+        if self.stream_start_pts is None:
+            self.stream_start_pts = pts
+
+        self.rolling_stats.append(pts, snapshot.composite_score)
+        self.rolling_stats_1min.append(pts, snapshot.composite_score)
+
+        if self.calibrator.detect_activity_change(
+            self.rolling_stats_1min, self.rolling_stats
+        ):
+            self.rolling_stats = RollingStats()
+            self.rolling_stats_1min = RollingStats(window_sec=60)
+            self.rolling_stats.append(pts, snapshot.composite_score)
+            self.rolling_stats_1min.append(pts, snapshot.composite_score)
+
+        elapsed_sec = pts - self.stream_start_pts
+        thresholds = self.calibrator.get_thresholds(elapsed_sec, self.rolling_stats)
+
+        if elapsed_sec >= 300:
+            if (
+                self._last_recalibrate_pts is None
+                or pts - self._last_recalibrate_pts >= 30
+            ):
+                self.calibrator.recalibrate()
+                self._last_recalibrate_pts = pts
 
         baseline = max(self.chat_analyzer.baseline_volume, 1e-6)
         chat_volume_ratio = chat_res["raw_volume"] / baseline
-        self.state_machine.process(snapshot, chat_volume_ratio=chat_volume_ratio)
+        self.state_machine.process(
+            snapshot,
+            chat_volume_ratio=chat_volume_ratio,
+            thresholds=thresholds,
+        )
 
-        if prev_state == "ACTIVE" and self.state_machine.current_event.state == "CLOSED":
-            clip_path = ""
-            if self.clip_generator:
-                clip_path = self.clip_generator.generate(self.state_machine.current_event)
+        ev = self.state_machine.current_event
+        new_state = ev.state
 
+        if prev_state == "OPENING" and new_state == "ACTIVE":
+            ev.is_growing = True
             if self.db:
-                ev = self.state_machine.current_event
-                self.db.insert_highlight(
+                highlight_id = self.db.insert_highlight(
                     stream_id=self.stream_id,
                     start_pts=ev.start_pts,
-                    end_pts=ev.end_pts,
+                    end_pts=pts,
                     score=ev.peak_score,
-                    clip_path=clip_path,
                     status="PENDING",
                     reason="Pipeline detected highlight",
+                    highlight_type="DRAFT",
+                    is_growing=1,
+                    quality="partial",
+                    peak_pts=ev.peak_pts,
                 )
+                ev.draft_highlight_id = highlight_id
+        elif new_state == "ACTIVE" and ev.draft_highlight_id is not None and self.db:
+            self.db.update_highlight(
+                ev.draft_highlight_id,
+                score=ev.peak_score,
+                peak_pts=ev.peak_pts,
+                end_pts=pts,
+            )
+
+        if (
+            self.highlight_processor is not None
+            and self.highlight_processor.pending_queue.is_ready(pts)
+            and self.transcript_buffer is not None
+        ):
+            self.highlight_processor.process_pending_queue(
+                self.signal_history,
+                self.transcript_buffer,
+                clip_source,
+            )
+
+        closed_info = None
+        if prev_state == "ACTIVE" and new_state == "CLOSED":
+            if self.db and ev.draft_highlight_id is not None:
+                self.db.update_highlight(
+                    ev.draft_highlight_id,
+                    is_growing=0,
+                    end_pts=ev.end_pts,
+                    score=ev.peak_score,
+                    peak_pts=ev.peak_pts,
+                )
+            closed_info = ClosedEventInfo(event=ev, close_pts=ev.end_pts)
+
+        return closed_info

@@ -5,11 +5,16 @@ from unittest.mock import patch, MagicMock, call
 
 from src.ingestion.stream_worker import StreamWorker
 from src.engine.pipeline import MasterPipeline
-from src.core.models import TranscriptResult
+from src.core.models import TranscriptResult, ClosedEventInfo, EventCandidate
 
 
 def _make_mock_pipeline() -> MagicMock:
     pipeline = MagicMock(spec=MasterPipeline)
+    pipeline.process_chunk.return_value = None
+    pipeline.signal_history = MagicMock()
+    pipeline.state_machine = MagicMock()
+    pipeline.clip_generator = MagicMock()
+    pipeline.db = MagicMock()
     return pipeline
 
 
@@ -129,4 +134,67 @@ def test_stream_worker_passes_transcript_to_pipeline(MockSTT):
     assert call_kwargs["transcript"] is not None
     assert len(call_kwargs["transcript"]) == 1
     assert call_kwargs["transcript"][0]["item"].text == "test"
+    assert call_kwargs["clip_source"] == "/tmp/live.mp4"
+
+
+@patch("src.ingestion.stream_worker.HighlightProcessor")
+def test_stream_worker_look_forward_on_closed(MockHighlightProcessor):
+    """StreamWorker should run look_forward blocking when pipeline returns ClosedEventInfo."""
+    pipeline = _make_mock_pipeline()
+    closed_event = EventCandidate(
+        state="CLOSED",
+        peak_pts=60.0,
+        start_pts=50.0,
+        end_pts=80.0,
+        peak_score=0.8,
+        draft_highlight_id=1,
+    )
+    pipeline.process_chunk.side_effect = [
+        ClosedEventInfo(event=closed_event, close_pts=80.0),
+        None,
+    ]
+    pipeline.signal_history = MagicMock()
+    pipeline.signal_history.get_at.return_value = MagicMock()
+    pipeline.state_machine = MagicMock()
+    pipeline.state_machine.current_event = closed_event
+    pipeline.clip_generator = MagicMock()
+    pipeline.db = MagicMock()
+
+    mock_processor = MockHighlightProcessor.return_value
+
+    with _patch_stt(), \
+         patch("src.ingestion.stream_worker.StreamRecorder") as MockRecorder, \
+         patch("src.ingestion.stream_worker.ChatCollector") as MockCollector, \
+         patch("src.ingestion.stream_worker.ContextExpander") as MockExpander, \
+         patch("src.ingestion.stream_worker.time.sleep"):
+
+        mock_expander = MockExpander.return_value
+        mock_expander.look_forward.return_value = 85.0
+
+        mock_recorder = MagicMock()
+        mock_recorder.is_running = True
+        mock_recorder.video_path = "/tmp/live.mp4"
+        mock_recorder.audio_buffer = MagicMock()
+        mock_recorder.audio_buffer.read.return_value = np.zeros(16000 * 5, dtype=np.float32)
+        MockRecorder.return_value = mock_recorder
+
+        mock_collector = MagicMock()
+        mock_collector.is_running = True
+        mock_collector.chat_buffer = MagicMock()
+        mock_collector.chat_buffer.items = []
+        MockCollector.return_value = mock_collector
+
+        worker = StreamWorker(
+            url="https://tiktok.com/@test/live",
+            username="testuser",
+            pipeline=pipeline,
+            max_iterations=2,
+        )
+        worker.run()
+
+    assert pipeline.process_chunk.call_count == 2
+    mock_processor.on_event_closed.assert_called_once()
+    call_kwargs = mock_processor.on_event_closed.call_args.kwargs
+    assert call_kwargs["event"] is closed_event
+    assert call_kwargs["resolution_pts"] == 85.0
     assert call_kwargs["clip_source"] == "/tmp/live.mp4"

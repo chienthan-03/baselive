@@ -5,12 +5,32 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+_HIGHLIGHT_MIGRATIONS = [
+    ("highlight_type", "TEXT DEFAULT 'FINAL'"),
+    ("is_growing", "INTEGER DEFAULT 0"),
+    ("quality", "TEXT DEFAULT 'complete'"),
+    ("content_type", "TEXT"),
+    ("draft_clip_path", "TEXT"),
+    ("parent_id", "INTEGER"),
+    ("peak_pts", "REAL"),
+    ("ai_start_pts", "REAL"),
+    ("ai_end_pts", "REAL"),
+]
+
+
 class Database:
     def __init__(self, db_path: str = "base_live.db"):
         self.db_path = db_path
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         # Configure sqlite to return dictionary-like rows
         self.conn.row_factory = sqlite3.Row
+
+    def _migrate_highlights_columns(self, cursor):
+        cursor.execute("PRAGMA table_info(highlights)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _HIGHLIGHT_MIGRATIONS:
+            if col_name not in existing:
+                cursor.execute(f"ALTER TABLE highlights ADD COLUMN {col_name} {col_def}")
 
     def init_db(self):
         """Creates the necessary tables if they don't exist."""
@@ -28,25 +48,85 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        self._migrate_highlights_columns(cursor)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS highlight_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                highlight_id INTEGER NOT NULL,
+                stream_id TEXT NOT NULL,
+                editor_id TEXT DEFAULT 'default',
+                ai_start_pts REAL,
+                ai_end_pts REAL,
+                ai_score REAL,
+                action TEXT NOT NULL,
+                editor_start_pts REAL,
+                editor_end_pts REAL,
+                reject_reason TEXT,
+                start_delta_sec REAL,
+                end_delta_sec REAL,
+                content_type TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         self.conn.commit()
         logger.info("Database initialized successfully.")
 
-    def insert_highlight(self, stream_id: str, start_pts: float, end_pts: float, 
-                         score: float, clip_path: str = "", status: str = "PENDING", 
-                         reason: str = "") -> int:
+    def insert_highlight(
+        self,
+        stream_id: str,
+        start_pts: float,
+        end_pts: float,
+        score: float,
+        clip_path: str = "",
+        status: str = "PENDING",
+        reason: str = "",
+        highlight_type: str = "FINAL",
+        is_growing: int = 0,
+        quality: str = "complete",
+        content_type: Optional[str] = None,
+        draft_clip_path: Optional[str] = None,
+        parent_id: Optional[int] = None,
+        peak_pts: Optional[float] = None,
+        ai_start_pts: Optional[float] = None,
+        ai_end_pts: Optional[float] = None,
+    ) -> int:
         """Inserts a new highlight record and returns its ID."""
         cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO highlights (stream_id, start_pts, end_pts, score, clip_path, status, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (stream_id, start_pts, end_pts, score, clip_path, status, reason))
+            INSERT INTO highlights (
+                stream_id, start_pts, end_pts, score, clip_path, status, reason,
+                highlight_type, is_growing, quality, content_type, draft_clip_path,
+                parent_id, peak_pts, ai_start_pts, ai_end_pts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            stream_id, start_pts, end_pts, score, clip_path, status, reason,
+            highlight_type, is_growing, quality, content_type, draft_clip_path,
+            parent_id, peak_pts, ai_start_pts, ai_end_pts,
+        ))
         self.conn.commit()
         return cursor.lastrowid
 
-    def get_highlights(self) -> List[Dict]:
-        """Retrieves all highlights, ordered by creation time descending."""
+    def get_highlights(
+        self,
+        type: Optional[str] = None,
+        stream_id: Optional[str] = None,
+    ) -> List[Dict]:
+        """Retrieves highlights, ordered by creation time descending."""
+        conditions = ["status != 'MERGED'"]
+        params: list = []
+        if type is not None:
+            conditions.append("highlight_type = ?")
+            params.append(type)
+        if stream_id is not None:
+            conditions.append("stream_id = ?")
+            params.append(stream_id)
+        where = "WHERE " + " AND ".join(conditions)
         cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM highlights ORDER BY created_at DESC")
+        cursor.execute(
+            f"SELECT * FROM highlights {where} ORDER BY created_at DESC",
+            params,
+        )
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
@@ -66,9 +146,106 @@ class Database:
     def update_boundaries(self, highlight_id: int, start_pts: float, end_pts: float):
         """Updates the pre-roll/post-roll boundaries of a highlight."""
         cursor = self.conn.cursor()
-        cursor.execute("UPDATE highlights SET start_pts = ?, end_pts = ? WHERE id = ?", 
+        cursor.execute("UPDATE highlights SET start_pts = ?, end_pts = ? WHERE id = ?",
                        (start_pts, end_pts, highlight_id))
         self.conn.commit()
+
+    def update_highlight(self, highlight_id: int, **fields):
+        """Updates arbitrary allowed fields on a highlight."""
+        allowed = {
+            "stream_id", "start_pts", "end_pts", "score", "clip_path", "status", "reason",
+            "highlight_type", "is_growing", "quality", "content_type", "draft_clip_path",
+            "parent_id", "peak_pts", "ai_start_pts", "ai_end_pts",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [highlight_id]
+        cursor = self.conn.cursor()
+        cursor.execute(f"UPDATE highlights SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+
+    def upgrade_to_final(
+        self,
+        highlight_id: int,
+        start_pts: float,
+        end_pts: float,
+        clip_path: str,
+        quality: str = "complete",
+        content_type: Optional[str] = None,
+        ai_start_pts: Optional[float] = None,
+        ai_end_pts: Optional[float] = None,
+    ):
+        """Upgrade a DRAFT highlight to FINAL with refined boundaries."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            UPDATE highlights SET
+                highlight_type = 'FINAL',
+                is_growing = 0,
+                start_pts = ?,
+                end_pts = ?,
+                clip_path = ?,
+                quality = ?,
+                content_type = ?,
+                ai_start_pts = ?,
+                ai_end_pts = ?
+            WHERE id = ?
+        ''', (start_pts, end_pts, clip_path, quality, content_type,
+              ai_start_pts, ai_end_pts, highlight_id))
+        self.conn.commit()
+
+    def insert_feedback(
+        self,
+        highlight_id: int,
+        stream_id: str,
+        action: str,
+        *,
+        editor_id: str = "default",
+        ai_start_pts: Optional[float] = None,
+        ai_end_pts: Optional[float] = None,
+        ai_score: Optional[float] = None,
+        editor_start_pts: Optional[float] = None,
+        editor_end_pts: Optional[float] = None,
+        reject_reason: Optional[str] = None,
+        start_delta_sec: Optional[float] = None,
+        end_delta_sec: Optional[float] = None,
+        content_type: Optional[str] = None,
+    ) -> int:
+        """Inserts editor feedback for a highlight and returns its ID."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO highlight_feedback (
+                highlight_id, stream_id, editor_id, ai_start_pts, ai_end_pts,
+                ai_score, action, editor_start_pts, editor_end_pts, reject_reason,
+                start_delta_sec, end_delta_sec, content_type
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            highlight_id, stream_id, editor_id, ai_start_pts, ai_end_pts,
+            ai_score, action, editor_start_pts, editor_end_pts, reject_reason,
+            start_delta_sec, end_delta_sec, content_type,
+        ))
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_feedback_for_highlight(self, highlight_id: int) -> List[Dict]:
+        """Retrieves all feedback entries for a highlight, newest first."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM highlight_feedback WHERE highlight_id = ? ORDER BY created_at DESC",
+            (highlight_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_feedback_since(self, hours: int = 24) -> List[Dict]:
+        """Retrieves feedback entries from the last N hours for the learner."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM highlight_feedback WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC",
+            (f"-{hours} hours",),
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     def close(self):
         """Closes the database connection."""
