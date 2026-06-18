@@ -4,16 +4,28 @@ from typing import List, Optional, Dict
 @dataclass
 class SignalSnapshot:
     pts: float
-    
-    # Audio signals (Basic phase)
+
+    # Audio signals
     audio_energy: float = 0.0
     audio_energy_spike: bool = False
     silence_before: float = 0.0
-    
-    # STT & Chat signals (Phase 1.2)
+    pitch_deviation: float = 0.0
+    speaking_rate: float = 0.0
+    speaker_overlap: float = 0.0
+    laughter_prob: float = 0.0
+
+    # Transcript signals
+    transcript_text: str = ""
     sentiment_shift: float = 0.0
+    keyword_triggered: List[str] = field(default_factory=list)
+    sentence_rate: float = 0.0
+
+    # Chat signals
     chat_volume_spike: float = 0.0
-    
+    chat_emoji_scores: Dict[str, float] = field(default_factory=dict)
+    chat_keyword_cluster: Optional[str] = None
+    gift_event: Optional[Dict] = None
+
     # Aggregate
     composite_score: float = 0.0
 

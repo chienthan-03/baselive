@@ -10,7 +10,19 @@ def test_signal_snapshot_initialization():
         composite_score=0.75
     )
     assert snapshot.composite_score == 0.75
-    
+
+
+def test_signal_snapshot_extended_fields():
+    snapshot = SignalSnapshot(
+        pts=1.0,
+        pitch_deviation=0.5,
+        laughter_prob=0.8,
+        chat_emoji_scores={"funny": 0.7},
+    )
+    assert snapshot.laughter_prob == 0.8
+    assert snapshot.chat_emoji_scores["funny"] == 0.7
+
+
 def test_event_candidate_initialization():
     event = EventCandidate()
     assert event.state == "IDLE"
