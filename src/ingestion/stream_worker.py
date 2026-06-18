@@ -11,7 +11,8 @@ import numpy as np
 from src.ingestion.stream_recorder import StreamRecorder
 from src.ingestion.chat_collector import ChatCollector
 from src.engine.pipeline import MasterPipeline
-from src.buffer.circular_buffer import AudioRingBuffer, ChatBuffer
+from src.buffer.circular_buffer import AudioRingBuffer, ChatBuffer, TranscriptBuffer
+from src.pipeline.stt_worker import STTWorker
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,13 @@ class StreamWorker:
 
         self.audio_buffer = AudioRingBuffer(capacity_sec=600, sample_rate=16000)
         self.chat_buffer = ChatBuffer(capacity_sec=900)
+        self.transcript_buffer = TranscriptBuffer(capacity_sec=900)
+
+        self.stt_worker = STTWorker(model_size="small")
+        try:
+            self.stt_worker.load_model()
+        except Exception as exc:
+            logger.warning("STT model failed to load: %s", exc)
 
         self.recorder = StreamRecorder(
             url=self.url,
@@ -100,9 +108,23 @@ class StreamWorker:
                 # Extract actual items from dict {"item": dict, "pts": pts}
                 chat_items = [i["item"] for i in self.chat_buffer.items if i["pts"] >= self._pts]
 
+                if self.stt_worker.enabled:
+                    transcript_result = self.stt_worker.transcribe_chunk(
+                        audio_chunk, chunk_start_pts=self._pts
+                    )
+                    self.transcript_buffer.add_item(transcript_result, pts=self._pts)
+
+                transcript_items = [
+                    i for i in self.transcript_buffer.items if i["pts"] >= self._pts
+                ]
+
                 # Process chunk
                 self.pipeline.process_chunk(
-                    pts=self._pts, audio_data=audio_chunk, chat_messages=chat_items
+                    pts=self._pts,
+                    audio_data=audio_chunk,
+                    chat_messages=chat_items,
+                    transcript=transcript_items or None,
+                    clip_source=self.recorder.video_path or "",
                 )
 
                 self._pts += self.chunk_duration_s
