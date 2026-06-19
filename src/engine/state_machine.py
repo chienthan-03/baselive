@@ -35,7 +35,7 @@ class StateMachine:
         close_thr = thresholds.close_thr if thresholds else self.CLOSE_THR
 
         logger.info(
-            "pts=%.1fs | score=%.3f (thr=%.2f/%.2f) | state=%s | energy=%.2f | laughter=%.2f | chat_vol=%.2f",
+            "pts=%.1fs | score=%.3f (thr=%.2f/%.2f) | state=%s | energy=%.2f | laughter=%.2f | chat_vol=%.2f | speed=%.2f",
             pts,
             score,
             open_thr,
@@ -44,6 +44,7 @@ class StateMachine:
             snapshot.audio_energy,
             snapshot.laughter_prob,
             snapshot.chat_volume_spike,
+            snapshot.speaking_rate,
         )
 
         if ev.state == "IDLE":
