@@ -24,7 +24,13 @@ def _ytdlp_resolve_command() -> list[str]:
         base = ["yt-dlp"]
     else:
         base = [sys.executable, "-m", "yt_dlp"]
-    return base + ["--no-live-from-start", "-g", "-f", _YTDLP_FORMAT]
+    return base + [
+        "--no-live-from-start",
+        "-g",
+        "-f", _YTDLP_FORMAT,
+        "--no-check-certificate",
+        "--geo-bypass",
+    ]
 
 
 # Backwards-compatible alias used in tests.
@@ -67,7 +73,7 @@ class StreamRecorder:
         self.max_video_size_mb = max_video_size_mb
 
         os.makedirs(os.path.join(video_output_dir, stream_id), exist_ok=True)
-        self.video_path = os.path.join(video_output_dir, stream_id, "live.mp4")
+        self.video_path = os.path.join(video_output_dir, stream_id, "live.ts")
         self.pts_offset: float = 0.0
 
         self._ffmpeg_proc: Optional[subprocess.Popen] = None
@@ -148,24 +154,28 @@ class StreamRecorder:
         return stream_url
 
     def _ffmpeg_command(self, stream_url: str) -> list[str]:
+        abs_video_path = os.path.abspath(self.video_path).replace("\\", "/")
         return [
             "ffmpeg",
             "-loglevel", "error",
+            "-y",
             "-i", stream_url,
-            # Output 1: raw PCM audio → stdout for pipeline analysis
+            # Output 1: raw PCM audio → stdout
             "-map", "0:a?",
             "-ar", str(self.sample_rate),
             "-ac", "1",
             "-f", "f32le",
             "pipe:1",
-            # Output 2: video + audio → live.mp4 so clips have sound
+            # Output 2: video + audio → live.ts
             "-map", "0:v?",
             "-map", "0:a?",
-            "-c:v", "copy",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
             "-c:a", "aac",
             "-b:a", "128k",
-            "-movflags", "+frag_keyframe+empty_moov",
-            self.video_path,
+            "-f", "mpegts",
+            abs_video_path,
         ]
 
     def _launch_ffmpeg(self) -> None:
@@ -173,31 +183,38 @@ class StreamRecorder:
         if not stream_url:
             self._ffmpeg_proc = None
             return
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(os.path.abspath(self.video_path)), exist_ok=True)
+        
         try:
             self._ffmpeg_proc = subprocess.Popen(
                 self._ffmpeg_command(stream_url),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                bufsize=10**6,
             )
+            # Drain stderr in a background thread to prevent blocking
+            threading.Thread(target=self._drain_stderr, args=(self._ffmpeg_proc,), daemon=True).start()
         except FileNotFoundError as exc:
             logger.error("Failed to launch ffmpeg: %s", exc)
             self._ffmpeg_proc = None
 
-    def _log_ffmpeg_stderr(self) -> None:
-        if self._ffmpeg_proc is None or self._ffmpeg_proc.stderr is None:
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+        if proc.stderr is None:
             return
-        try:
-            err = self._ffmpeg_proc.stderr.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            return
-        if err:
-            logger.error("ffmpeg failed for %s: %s", self.url, err[-500:])
+        for line in iter(proc.stderr.readline, b""):
+            try:
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded and "error" in decoded.lower():
+                    logger.error("ffmpeg stderr: %s", decoded)
+            except Exception:
+                pass
 
     def _reader_loop(self) -> None:
         """Continuous loop: read PCM chunks from ffmpeg stdout."""
         while not self._stop_event.is_set():
             if self._ffmpeg_proc is None or self._ffmpeg_proc.poll() is not None:
-                self._log_ffmpeg_stderr()
                 logger.warning("FFmpeg process ended unexpectedly for %s", self.url)
                 break
             self._read_one_chunk()
@@ -210,13 +227,22 @@ class StreamRecorder:
         self._video_start_pts = self._pts
 
         stream_dir = os.path.join(self.video_output_dir, self.stream_id)
-        filename = f"live_{self._file_index:03d}.mp4"
+        filename = f"live_{self._file_index:03d}.ts"
         self.video_path = os.path.join(stream_dir, filename)
         logger.info(
             "Rotated video to %s (pts_offset=%.2f)",
             self.video_path,
             self.pts_offset,
         )
+        
+        # Restart ffmpeg for rotation
+        if self._ffmpeg_proc:
+            self._ffmpeg_proc.terminate()
+            try:
+                self._ffmpeg_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._ffmpeg_proc.kill()
+        self._launch_ffmpeg()
 
     def _should_rotate_video(self) -> bool:
         """Return True when duration or file-size threshold is exceeded."""

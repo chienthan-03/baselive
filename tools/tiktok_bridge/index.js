@@ -1,4 +1,4 @@
-const { WebcastPushConnection } = require('tiktok-live-connector');
+const { TikTokLiveConnection } = require('tiktok-live-connector');
 
 const username = process.argv[2];
 if (!username) {
@@ -7,7 +7,7 @@ if (!username) {
 }
 
 // Create a new wrapper object and pass the username
-const tiktokLiveConnection = new WebcastPushConnection(username);
+const tiktokLiveConnection = new TikTokLiveConnection(username, {});
 
 // Function to emit JSON event to stdout
 function emitEvent(eventType, user, content, giftValue = null) {
@@ -32,7 +32,7 @@ tiktokLiveConnection.connect().then(state => {
 
 // Chat event
 tiktokLiveConnection.on('chat', data => {
-    emitEvent("COMMENT", data.uniqueId, data.comment);
+    emitEvent("COMMENT", data.user?.displayId || data.user?.nickname || "unknown", data.content);
 });
 
 // Gift event
@@ -43,20 +43,21 @@ tiktokLiveConnection.on('gift', data => {
     }
     const cost = (data.diamondCount || 0) * (data.repeatCount || 1);
     const content = `sent ${data.giftName} x${data.repeatCount || 1}`;
-    emitEvent("GIFT", data.uniqueId, content, cost);
+    emitEvent("GIFT", data.user?.displayId || data.user?.nickname || "unknown", content, cost);
 });
 
 // Like event
 tiktokLiveConnection.on('like', data => {
-    emitEvent("LIKE", data.uniqueId, `sent ${data.likeCount} likes`);
+    const likeCount = data.likeCount || data.totalLikeCount || 1;
+    emitEvent("LIKE", data.user?.displayId || data.user?.nickname || "unknown", `sent ${likeCount} likes`);
 });
 
 // Follow event
 tiktokLiveConnection.on('follow', data => {
-    emitEvent("FOLLOW", data.uniqueId, "followed the host");
+    emitEvent("FOLLOW", data.user?.displayId || data.user?.nickname || "unknown", "followed the host");
 });
 
 // Share event
 tiktokLiveConnection.on('share', data => {
-    emitEvent("SHARE", data.uniqueId, "shared the stream");
+    emitEvent("SHARE", data.user?.displayId || data.user?.nickname || "unknown", "shared the stream");
 });

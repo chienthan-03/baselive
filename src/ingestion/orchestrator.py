@@ -263,6 +263,7 @@ class OrchestratorService:
         from src.ingestion.stream_worker import StreamWorker
 
         stream_output = f"{self._output_dir}/{stream_id}"
+        import os
         pipeline = MasterPipeline(
             output_dir="output/clips",
             db=self._db,
@@ -273,6 +274,6 @@ class OrchestratorService:
             username=adapter.extract_username(url),
             adapter=adapter,
             pipeline=pipeline,
-            output_dir=stream_output,
+            output_dir=self._output_dir,
             metrics=self._metrics,
         )

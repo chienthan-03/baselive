@@ -110,8 +110,8 @@ class BaselineCalibrator:
                 peak_thr=self.global_prior.peak_thr,
             )
         return ThresholdSet(
-            open_thr=rolling_stats.percentile(80),
-            confirm_thr=rolling_stats.percentile(90),
+            open_thr=rolling_stats.percentile(70),
+            confirm_thr=rolling_stats.percentile(80),
             close_thr=rolling_stats.percentile(30),
             peak_thr=rolling_stats.percentile(95),
         )

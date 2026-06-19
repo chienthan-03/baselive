@@ -33,10 +33,10 @@ def test_phase2_uses_percentiles(rolling_stats_with_scores):
     )
     assert thresholds.open_thr > thresholds.close_thr
     assert thresholds.open_thr == pytest.approx(
-        rolling_stats_with_scores.percentile(80), rel=1e-3
+        rolling_stats_with_scores.percentile(70), rel=1e-3
     )
     assert thresholds.confirm_thr == pytest.approx(
-        rolling_stats_with_scores.percentile(90), rel=1e-3
+        rolling_stats_with_scores.percentile(80), rel=1e-3
     )
     assert thresholds.close_thr == pytest.approx(
         rolling_stats_with_scores.percentile(30), rel=1e-3

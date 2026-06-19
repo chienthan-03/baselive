@@ -229,7 +229,7 @@ body {
 .panel-queue {
     border-right: 1px solid var(--color-border);
     background: var(--color-bg-mid);
-    overflow-y: auto;
+    /* Removed overflow-y: auto to allow highlight-list to handle its own scrolling */
 }
 
 .panel-preview {
@@ -517,10 +517,12 @@ body {
     flex-direction: column;
     gap: 8px;
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
 }
 
 .highlight-card {
+    flex-shrink: 0;
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);

@@ -19,10 +19,11 @@ def test_chat_collector_parses_json_to_buffer():
         {"event_type": "GIFT",    "username": "fan",   "content": "rose", "pts": 101.5, "gift_value": 5.0},
     ]
     fake_stdout_text = "\n".join(json.dumps(m) for m in messages) + "\n"
-    fake_stdout = BytesIO(fake_stdout_text.encode("utf-8"))
+    fake_stdout = StringIO(fake_stdout_text)
 
     mock_proc = MagicMock()
     mock_proc.stdout = fake_stdout
+    mock_proc.stderr = StringIO("") # Mock stderr
     mock_proc.poll.return_value = None
 
     chat_buffer = _make_chat_buffer()

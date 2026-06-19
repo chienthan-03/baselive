@@ -92,7 +92,10 @@ class ChatCollector:
             self._proc = subprocess.Popen(
                 ["node", self.node_bridge_path, self.username],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,  # Capture stderr to see errors
+                text=True,               # Use text mode for easier reading
+                bufsize=1,               # Line buffered
+                encoding="utf-8",        # Explicitly set encoding to UTF-8
             )
         except FileNotFoundError as e:
             logger.error("Could not launch Node.js bridge: %s. Chat signals disabled.", e)
@@ -100,11 +103,26 @@ class ChatCollector:
 
     def _reader_loop(self) -> None:
         """Read JSON lines from bridge stdout until stopped or process ends."""
+        # Start a separate thread to log stderr
+        stderr_thread = threading.Thread(target=self._log_stderr, daemon=True)
+        stderr_thread.start()
+
         while not self._stop_event.is_set():
             if self._proc is None or self._proc.poll() is not None:
-                logger.warning("Node bridge process ended unexpectedly")
+                exit_code = self._proc.poll() if self._proc else "N/A"
+                logger.warning("Node bridge process ended unexpectedly with exit code %s", exit_code)
                 break
             self._read_one_line()
+
+    def _log_stderr(self) -> None:
+        """Read and log lines from bridge stderr."""
+        if self._proc is None or self._proc.stderr is None:
+            return
+        
+        for line in self._proc.stderr:
+            line = line.strip()
+            if line:
+                logger.error("[NodeBridge Error] %s", line)
 
     def _read_one_line(self) -> None:
         """Read one JSON line from the bridge stdout and push to ChatBuffer."""
@@ -116,12 +134,23 @@ class ChatCollector:
             return
 
         try:
-            line = raw.decode("utf-8", errors="replace").strip()
+            line = raw.strip()
             if not line:
                 return
             event = json.loads(line)
             pts = event.get("pts", time.time())
             self.chat_buffer.add_item(event, pts=pts)
-            logger.debug("Chat event received: %s", event.get("event_type"))
+            
+            # Log chat events at INFO level for better visibility
+            event_type = event.get("event_type")
+            username = event.get("username", "unknown")
+            content = event.get("content", "")
+            
+            if event_type == "COMMENT":
+                logger.info("[CHAT] %s: %s", username, content)
+            elif event_type == "GIFT":
+                logger.info("[GIFT] %s: %s (Value: %s)", username, content, event.get("gift_value"))
+            else:
+                logger.debug("Chat event received: %s", event_type)
         except json.JSONDecodeError as e:
             logger.warning("Failed to parse chat event JSON: %s | raw=%r", e, raw)

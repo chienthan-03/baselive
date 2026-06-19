@@ -86,6 +86,7 @@ class StreamWorker:
 
         self._running = False
         self._pts = 0.0
+        self.start_time: Optional[float] = None
 
         self.context_expander = ContextExpander()
         self.highlight_processor = HighlightProcessor(
@@ -246,6 +247,7 @@ class StreamWorker:
     def run(self) -> None:
         """Main loop: starts ingestion and feeds chunks to pipeline."""
         self._running = True
+        self.start_time = time.time()
         self.recorder.start()
         self.collector.start()
         self._logger.info("StreamWorker started for %s (@%s)", self.url, self.username)
@@ -268,6 +270,10 @@ class StreamWorker:
                     delay = backoff_delays[min(reconnect_attempts, len(backoff_delays) - 1)]
                     self._logger.warning("Recorder stopped. Reconnecting in %ds...", delay)
                     time.sleep(delay)
+                    
+                    # Reset PTS and start_time on reconnect to stay in sync with new recorder instance
+                    self._pts = 0.0
+                    self.start_time = time.time()
                     self.recorder.start()
                     reconnect_attempts += 1
                     continue
@@ -289,8 +295,13 @@ class StreamWorker:
                    audio_chunk = np.concatenate([audio_chunk, np.zeros(pad_len, dtype=np.float32)])
 
                 # Fetch chat
-                # Extract actual items from dict {"item": dict, "pts": pts}
-                chat_items = [i["item"] for i in self.chat_buffer.items if i["pts"] >= self._pts]
+                # Map relative _pts to absolute Unix timestamp for ChatBuffer filtering
+                current_unix_pts = self.start_time + self._pts
+                next_unix_pts = current_unix_pts + self.chunk_duration_s
+                chat_items = [
+                    i["item"] for i in self.chat_buffer.items 
+                    if current_unix_pts <= i["pts"] < next_unix_pts
+                ]
 
                 if self.stt_worker.enabled:
                     transcript_result = self.stt_worker.transcribe_chunk(

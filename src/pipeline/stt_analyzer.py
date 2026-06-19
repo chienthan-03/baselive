@@ -15,7 +15,7 @@ class STTAnalyzer:
 
         words = text.split()
         word_count = len(words)
-        speaking_rate = (word_count * 1.5 / duration_sec) if duration_sec > 0 else 0.0
+        speaking_rate = (word_count * 2.0 / duration_sec) if duration_sec > 0 else 0.0
 
         keyword_triggered = self._match_keywords(text_lower, self.SHOCK_KEYWORDS)
         sentiment_shift = self._sentiment_shift(text_lower)

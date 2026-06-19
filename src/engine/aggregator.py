@@ -105,6 +105,9 @@ class SignalAggregator:
         if self.stt_enabled and snapshot.keyword_triggered:
             score *= 1.3
 
+        if snapshot.speaking_rate > 4.5:
+            score *= 1.2
+
         gift = snapshot.gift_event
         if gift and gift.get("value", 0) > self.big_gift_threshold:
             score *= 1.4
