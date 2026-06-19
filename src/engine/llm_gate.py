@@ -24,6 +24,8 @@ class LLMRefineResult:
     content_type: str
     confidence: float
     reasoning: str = ""
+    is_valid: bool = True
+    quality_score: int = 5
 
 
 @dataclass
@@ -57,12 +59,8 @@ class LLMGate:
     def should_refine_boundary(self, event: EventCandidate, boundary: BoundaryResult) -> bool:
         if not self.enabled:
             return False
-        duration = boundary.resolution_pts - boundary.trigger_pts
-        if event.peak_score > 0.7:
-            return True
-        if duration > 180:
-            return True
-        return False
+        # Phase 4: Always trigger LLM to act as a quality filter
+        return True
 
     def refine_boundary(
         self,
@@ -86,6 +84,7 @@ class LLMGate:
                 "start": boundary.trigger_pts,
                 "end": boundary.resolution_pts,
             },
+            "duration_sec": boundary.resolution_pts - boundary.trigger_pts,
             "language": language,
         }
 
@@ -93,11 +92,13 @@ class LLMGate:
             parsed = self._call_openrouter(payload)
             self._record_call(gate, "ok")
             return LLMRefineResult(
-                refined_start_pts=float(parsed["refined_start_pts"]),
-                refined_end_pts=float(parsed["refined_end_pts"]),
+                refined_start_pts=float(parsed.get("refined_start_pts", boundary.trigger_pts)),
+                refined_end_pts=float(parsed.get("refined_end_pts", boundary.resolution_pts)),
                 content_type=str(parsed.get("content_type", "unknown")),
                 confidence=float(parsed.get("confidence", 0.0)),
                 reasoning=str(parsed.get("reasoning", "")),
+                is_valid=bool(parsed.get("is_valid", True)),
+                quality_score=int(parsed.get("quality_score", 5)),
             )
         except Exception as exc:
             logger.warning("LLMGate refine_boundary failed: %s", exc)
@@ -168,6 +169,12 @@ class LLMGate:
 
         return True
 
+    def is_rate_limited(self) -> bool:
+        """True if the next call would be blocked by MIN_GAP_SEC cooldown."""
+        if self._last_call_time is None:
+            return False
+        return time.time() - self._last_call_time < MIN_GAP_SEC
+
     def _record_call(self, gate: str, status: str) -> None:
         now = time.time()
         self._prune_old_calls(now)
@@ -197,7 +204,14 @@ class LLMGate:
                 {
                     "role": "system",
                     "content": (
-                        "You are a livestream highlight editor. "
+                        "You are an expert livestream highlight editor and content reviewer. "
+                        "Your task is to refine highlight boundaries AND grade the content quality based on the transcript. "
+                        "If the content is just noise, sneezing, coughing, or boring chatter without value, set is_valid to false. "
+                        "Provide a quality_score from 0 to 10 (0=garbage/noise, 10=viral/highly engaging). "
+                        "If quality_score < 5, set is_valid to false. "
+                        "If duration_sec > 90, apply stricter judgment — long clips are likely boundary detection errors; "
+                        "prefer to refine boundaries to 15–60s around the peak moment for TikTok. "
+                        "Output JSON format: {\"is_valid\": bool, \"quality_score\": int, \"refined_start_pts\": float, \"refined_end_pts\": float, \"content_type\": string, \"confidence\": float, \"reasoning\": string}. "
                         "Respond with valid JSON only, no markdown."
                     ),
                 },

@@ -155,3 +155,36 @@ def test_llm_gate_respects_budget(mock_openrouter, boundary):
     )
     assert result is None
     mock_openrouter.assert_not_called()
+
+
+def test_is_rate_limited_returns_true_within_min_gap():
+    """is_rate_limited() must return True if last call was within MIN_GAP_SEC."""
+    import time
+    from src.engine.llm_gate import LLMGate, MIN_GAP_SEC
+
+    gate = LLMGate(api_key="test-key")
+
+    # Simulate a recent call
+    gate._last_call_time = time.time() - (MIN_GAP_SEC - 5)  # 5s before gap expires
+
+    assert gate.is_rate_limited() is True
+
+
+def test_is_rate_limited_returns_false_after_gap():
+    """is_rate_limited() must return False after MIN_GAP_SEC has elapsed."""
+    import time
+    from src.engine.llm_gate import LLMGate, MIN_GAP_SEC
+
+    gate = LLMGate(api_key="test-key")
+    gate._last_call_time = time.time() - (MIN_GAP_SEC + 5)  # 5s after gap
+
+    assert gate.is_rate_limited() is False
+
+
+def test_is_rate_limited_returns_false_when_never_called():
+    """is_rate_limited() must return False when gate has never been called."""
+    from src.engine.llm_gate import LLMGate
+
+    gate = LLMGate(api_key="test-key")
+    assert gate.is_rate_limited() is False
+
