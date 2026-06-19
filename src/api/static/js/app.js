@@ -97,7 +97,11 @@ const api = {
         return res.json();
     },
     async reject(id) {
-        const res = await fetch(`/api/highlights/${id}/reject`, { method: 'POST' });
+        const res = await fetch(`/api/highlights/${id}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: 'unspecified' }),
+        });
         if (!res.ok) throw new Error('Failed to reject');
         return res.json();
     },

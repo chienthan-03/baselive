@@ -6,10 +6,22 @@ from src.core.models import EventCandidate
 
 class ClipGenerator:
     def __init__(self, source_file: str, output_dir: str = "output/clips",
-                 pre_roll: float = 10.0, post_roll: float = 5.0,
+                 pre_roll: float | None = None, post_roll: float | None = None,
                  pts_offset: float = 0.0, metrics=None):
         self.source_file = source_file
         self.output_dir = output_dir
+
+        if pre_roll is None:
+            try:
+                pre_roll = float(os.environ.get("HIGHLIGHT_PRE_ROLL", "10.0"))
+            except ValueError:
+                pre_roll = 10.0
+        if post_roll is None:
+            try:
+                post_roll = float(os.environ.get("HIGHLIGHT_POST_ROLL", "5.0"))
+            except ValueError:
+                post_roll = 5.0
+
         self.pre_roll = pre_roll
         self.post_roll = post_roll
         self.pts_offset = pts_offset

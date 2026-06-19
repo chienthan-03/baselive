@@ -130,6 +130,21 @@ class StreamWorker:
                 self._prev_video_frame = frame
         return video_signals
 
+    def _sync_clip_generator(self) -> None:
+        """Keep highlight_processor.clip_generator in sync with pipeline's instance.
+
+        pipeline.clip_generator is created lazily on the first process_chunk call
+        that receives a non-empty clip_source.  At __init__ time it is None, so the
+        HighlightProcessor is initialised with None.  We must propagate the reference
+        once the pipeline creates it, otherwise clips are never generated.
+        """
+        if (
+            self.highlight_processor.clip_generator is None
+            and self.pipeline.clip_generator is not None
+        ):
+            self.highlight_processor.clip_generator = self.pipeline.clip_generator
+            self._logger.info("clip_generator synced to highlight_processor")
+
     def _process_chunk(
         self,
         audio_chunk: np.ndarray,
@@ -149,6 +164,8 @@ class StreamWorker:
                 video_signals=video_signals,
             )
         finally:
+            # Sync clip_generator after pipeline may have created it lazily
+            self._sync_clip_generator()
             if self._metrics is not None:
                 try:
                     self._metrics.observe_chunk(

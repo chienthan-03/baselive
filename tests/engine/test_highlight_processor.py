@@ -113,11 +113,16 @@ def test_highlight_processor_on_closed_enqueues_and_finalizes(
     mock_expander = MagicMock()
     mock_expander.expand.return_value = boundary
 
+    mock_llm = MagicMock()
+    mock_llm.is_rate_limited.return_value = False
+    mock_llm.should_refine_boundary.return_value = False
+
     processor = HighlightProcessor(
         context_expander=mock_expander,
         clip_generator=mock_clip,
         db=mock_db,
         state_machine=state_machine,
+        llm_gate=mock_llm,
     )
     processor.pending_queue = PendingEventQueue(max_wait_sec=0)
 
@@ -168,11 +173,16 @@ def test_processor_full_pipeline_long_event_split(
     mock_clip = MagicMock()
     mock_clip.generate_final.return_value = str(tmp_path / "final.mp4")
 
+    mock_llm = MagicMock()
+    mock_llm.is_rate_limited.return_value = False
+    mock_llm.should_refine_boundary.return_value = False
+
     processor = HighlightProcessor(
         context_expander=MagicMock(),
         clip_generator=mock_clip,
         db=db,
         stream_id="test",
+        llm_gate=mock_llm,
     )
     processor.pending_queue.enqueue(
         ResolvedEvent(
@@ -227,11 +237,19 @@ def test_processor_batch_resolve_overlapping_merge(transcript, tmp_path):
     mock_clip = MagicMock()
     mock_clip.generate_final.return_value = str(tmp_path / "final.mp4")
 
+    mock_llm = MagicMock()
+    mock_llm.is_rate_limited.return_value = False
+    mock_llm.should_refine_boundary.return_value = False
+    mock_overlap = MagicMock()
+    mock_overlap.decision = "MERGE"
+    mock_llm.resolve_overlap.return_value = mock_overlap
+
     processor = HighlightProcessor(
         context_expander=MagicMock(),
         clip_generator=mock_clip,
         db=db,
         stream_id="test",
+        llm_gate=mock_llm,
     )
     processor.pending_queue.enqueue(
         ResolvedEvent(

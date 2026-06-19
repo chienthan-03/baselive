@@ -1,0 +1,42 @@
+[
+  {
+    "id": 4,
+    "stream_id": "tiktok-khikho6677",
+    "start_pts": 65.0,
+    "end_pts": 94.0,
+    "score": 0.653870429650101,
+    "clip_path": "output/clips\\highlight_20260619_104958_score0.65.mp4",
+    "status": "PENDING",
+    "reason": "Pipeline detected highlight",
+    "created_at": "2026-06-19 03:47:56",
+    "highlight_type": "FINAL",
+    "is_growing": 0,
+    "quality": "complete",
+    "content_type": null,
+    "draft_clip_path": null,
+    "parent_id": null,
+    "peak_pts": 70.0,
+    "ai_start_pts": null,
+    "ai_end_pts": null
+  },
+  {
+    "id": 3,
+    "stream_id": "tiktok-khikho6677",
+    "start_pts": 5.0,
+    "end_pts": 29.0,
+    "score": 0.8710000000000001,
+    "clip_path": "output/clips\\highlight_20260619_104747_score0.87.mp4",
+    "status": "PENDING",
+    "reason": "Pipeline detected highlight",
+    "created_at": "2026-06-19 03:44:41",
+    "highlight_type": "FINAL",
+    "is_growing": 0,
+    "quality": "complete",
+    "content_type": null,
+    "draft_clip_path": null,
+    "parent_id": null,
+    "peak_pts": 10.0,
+    "ai_start_pts": null,
+    "ai_end_pts": null
+  }
+]

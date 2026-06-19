@@ -152,13 +152,18 @@ class StreamRecorder:
             "ffmpeg",
             "-loglevel", "error",
             "-i", stream_url,
+            # Output 1: raw PCM audio → stdout for pipeline analysis
             "-map", "0:a?",
             "-ar", str(self.sample_rate),
             "-ac", "1",
             "-f", "f32le",
             "pipe:1",
+            # Output 2: video + audio → live.mp4 so clips have sound
             "-map", "0:v?",
+            "-map", "0:a?",
             "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "128k",
             "-movflags", "+frag_keyframe+empty_moov",
             self.video_path,
         ]
