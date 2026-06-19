@@ -177,3 +177,42 @@ def test_expand_returns_boundary_result():
     )
     assert isinstance(result, BoundaryResult)
     assert result.trigger_pts <= result.peak_pts <= result.resolution_pts
+
+
+def test_look_back_no_history_stops_at_30s():
+    """When signal buffer has no data, look_back must not go beyond 30s from peak."""
+    expander = ContextExpander()
+    history = SignalHistoryBuffer(capacity_sec=120)   # empty
+    transcript = TranscriptBuffer(capacity_sec=900)
+    event_history = EventHistoryStore()
+
+    peak_pts = 100.0
+    result = expander.look_back(peak_pts, history, transcript, event_history)
+
+    assert result >= peak_pts - 30.0, (
+        f"Expected lookback <= 30s from peak, got {peak_pts - result:.1f}s"
+    )
+
+
+def test_look_back_empty_keywords_stops_on_low_score():
+    """When peak has no keywords (STT silent), sustained low score must trigger stop."""
+    expander = ContextExpander()
+    history = SignalHistoryBuffer(capacity_sec=120)
+    transcript = TranscriptBuffer(capacity_sec=900)
+    event_history = EventHistoryStore()
+
+    # Build history: 60s of low-score snapshots (score = 0.05) then a peak at t=100
+    for t in range(40, 100):
+        s = SignalSnapshot(pts=float(t), audio_energy=0.05, composite_score=0.05)
+        history.append(s)
+    # peak snapshot
+    peak_snap = SignalSnapshot(pts=100.0, audio_energy=0.9, composite_score=0.9)
+    history.append(peak_snap)
+
+    result = expander.look_back(100.0, history, transcript, event_history)
+
+    # Should stop well before t=40 (max lookback) — within LOW_SCORE_DURATION window
+    assert result > 40.0, (
+        f"Expected early stop, but got result={result} (went all the way back)"
+    )
+

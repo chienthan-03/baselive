@@ -21,6 +21,7 @@ class ContextExpander:
     MAX_LOOKBACK = 300.0
     MAX_LOOKFORWARD = 120.0
     STEP_SEC = 1.0
+    NO_DATA_LOOKBACK_SEC = 30.0  # max lookback when signal buffer has no history
 
     TOPIC_THRESHOLD = 0.3
     LOW_SCORE_THRESHOLD = 0.15
@@ -48,6 +49,10 @@ class ContextExpander:
         min_pts = peak_pts - self.MAX_LOOKBACK
         oldest = history.oldest_pts()
         has_history = history.get_at(oldest) is not None
+
+        # Guard A: no signal history at all — don't scan 300s of nothing
+        if not has_history:
+            return max(min_pts, peak_pts - self.NO_DATA_LOOKBACK_SEC)
 
         low_score_run = 0.0
         last_high_pts: Optional[float] = None
@@ -87,6 +92,12 @@ class ContextExpander:
                 if (
                     low_score_run >= self.LOW_SCORE_DURATION
                     and topic_jaccard(t_keywords, peak_keywords) < self.TOPIC_THRESHOLD
+                    and last_high_pts is not None
+                ):
+                    return last_high_pts
+                elif (
+                    low_score_run >= self.LOW_SCORE_DURATION
+                    and not peak_keywords
                     and last_high_pts is not None
                 ):
                     return last_high_pts
