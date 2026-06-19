@@ -1,5 +1,10 @@
-from src.engine.aggregator import SignalAggregator
+import pytest
+from src.engine.aggregator import SignalAggregator, WEIGHTS
 from src.core.models import SignalSnapshot
+
+
+def test_weights_sum_is_one():
+    assert sum(WEIGHTS.values()) == pytest.approx(1.0)
 
 
 def test_aggregator_excitement_formula():

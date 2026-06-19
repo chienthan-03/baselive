@@ -5,14 +5,14 @@ from src.core.models import SignalSnapshot
 
 WEIGHTS: Dict[str, float] = {
     "energy": 0.22,
-    "laughter": 0.18,
-    "chat_volume": 0.14,
-    "speaking_rate": 0.13,
-    "pitch": 0.09,
-    "emoji_dominant": 0.09,
-    "overlap": 0.05,
-    "video_scene_change": 0.05,
-    "video_motion": 0.05,
+    "laughter": 0.15,
+    "chat_volume": 0.13,
+    "speaking_rate": 0.22,
+    "pitch": 0.08,
+    "emoji_dominant": 0.08,
+    "overlap": 0.04,
+    "video_scene_change": 0.04,
+    "video_motion": 0.04,
 }
 
 STT_COMPONENTS = {"speaking_rate"}
