@@ -21,6 +21,12 @@ from src.engine.state_machine import StateMachine
 from src.db.database import Database
 
 
+MIN_PEAK_SCORE = 0.35        # events below this score are rejected before LLM
+MAX_PRE_LLM_DURATION = 90.0  # seconds; longer events are trimmed around peak
+SHRINK_LOOKBACK = 60.0       # how far before peak_pts to keep when trimming
+SHRINK_LOOKFORWARD = 30.0    # how far after peak_pts to keep when trimming
+
+
 class HighlightProcessor:
     def __init__(
         self,
@@ -54,6 +60,23 @@ class HighlightProcessor:
         except Exception:
             pass
 
+    def _pre_filter(self, resolved: ResolvedEvent) -> Optional[ResolvedEvent]:
+        """Rule-based filter before LLM queue. Returns None to reject, else (possibly trimmed) event."""
+        # Reject: score too low to be a real highlight
+        if resolved.peak_score < MIN_PEAK_SCORE:
+            if self.db and resolved.draft_highlight_id is not None:
+                self.db.update_status(resolved.draft_highlight_id, "REJECTED_PREFILTER")
+            return None
+
+        # Trim: clip too long — shrink around peak_pts
+        duration = resolved.end_pts - resolved.start_pts
+        if duration > MAX_PRE_LLM_DURATION:
+            new_start = max(resolved.start_pts, resolved.peak_pts - SHRINK_LOOKBACK)
+            new_end = min(resolved.end_pts, resolved.peak_pts + SHRINK_LOOKFORWARD)
+            resolved = replace(resolved, start_pts=new_start, end_pts=new_end)
+
+        return resolved
+
     def on_event_closed(
         self,
         event: EventCandidate,
@@ -71,6 +94,14 @@ class HighlightProcessor:
             self.event_history,
         )
         resolved = self.to_resolved(boundary, event)
+
+        # Pre-filter before queueing
+        resolved = self._pre_filter(resolved)
+        if resolved is None:
+            if self.state_machine is not None:
+                self.state_machine.current_event = EventCandidate()
+            return
+
         self.pending_queue.enqueue(resolved, current_pts)
 
         if self.pending_queue.is_ready(current_pts):
@@ -92,8 +123,15 @@ class HighlightProcessor:
         if clip_source and self.clip_generator is not None:
             self.clip_generator.source_file = clip_source
 
-        for index, resolved in enumerate(events):
-            events[index] = self._maybe_refine_boundary(resolved)
+        refined_events = []
+        for resolved in events:
+            refined = self._maybe_refine_boundary(resolved)
+            if refined is not None:
+                refined_events.append(refined)
+        
+        events = refined_events
+        if not events:
+            return []
 
         resolution = self.event_resolver.resolve(events)
         events = self._apply_overlap_decisions(
@@ -106,7 +144,7 @@ class HighlightProcessor:
 
         return results
 
-    def _maybe_refine_boundary(self, resolved: ResolvedEvent) -> ResolvedEvent:
+    def _maybe_refine_boundary(self, resolved: ResolvedEvent) -> Optional[ResolvedEvent]:
         boundary = BoundaryResult(
             trigger_pts=resolved.start_pts,
             resolution_pts=resolved.end_pts,
@@ -121,6 +159,11 @@ class HighlightProcessor:
             draft_highlight_id=resolved.draft_highlight_id,
         )
 
+        if self.llm_gate.is_rate_limited():
+            import logging
+            logging.warning("LLM rate limit active, passing unresolved boundary through")
+            return resolved
+
         if not self.llm_gate.should_refine_boundary(event_stub, boundary):
             return resolved
 
@@ -131,6 +174,13 @@ class HighlightProcessor:
         )
         if refine_result is None:
             return resolved
+
+        # Phase 4: AI Content Filtering
+        if not getattr(refine_result, "is_valid", True):
+            if self.db and resolved.draft_highlight_id is not None:
+                # Update DB directly so it doesn't show in UI
+                self.db.update_status(resolved.draft_highlight_id, "REJECTED_BY_AI")
+            return None
 
         return replace(
             resolved,

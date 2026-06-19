@@ -271,3 +271,85 @@ def test_processor_batch_resolve_overlapping_merge(transcript, tmp_path):
     merged_row = db.get_highlight(draft_b)
     assert merged_row["status"] == "MERGED"
     assert db.get_highlights() == [results[0]]
+
+
+def test_pre_filter_rejects_low_score_event():
+    """Events with peak_score below MIN_PEAK_SCORE must be rejected before LLM."""
+    from src.engine.highlight_processor import HighlightProcessor, MIN_PEAK_SCORE
+    from src.engine.context_expander import ContextExpander
+    from src.core.models import ResolvedEvent
+
+    db_mock = MagicMock()
+    processor = HighlightProcessor(
+        context_expander=ContextExpander(),
+        db=db_mock,
+        stream_id="test",
+    )
+
+    low_score_event = ResolvedEvent(
+        start_pts=0.0,
+        end_pts=30.0,
+        peak_pts=15.0,
+        peak_score=MIN_PEAK_SCORE - 0.05,  # just below threshold
+        keywords=[],
+        transcript_excerpt="",
+        draft_highlight_id=42,
+    )
+
+    result = processor._pre_filter(low_score_event)
+
+    assert result is None, "Low-score event should be rejected by pre-filter"
+    db_mock.update_status.assert_called_once_with(42, "REJECTED_PREFILTER")
+
+
+def test_pre_filter_trims_long_event():
+    """Events longer than MAX_PRE_LLM_DURATION must be trimmed around peak_pts."""
+    from src.engine.highlight_processor import HighlightProcessor, MAX_PRE_LLM_DURATION
+    from src.engine.context_expander import ContextExpander
+    from src.core.models import ResolvedEvent
+
+    processor = HighlightProcessor(context_expander=ContextExpander())
+
+    long_event = ResolvedEvent(
+        start_pts=0.0,
+        end_pts=200.0,       # 200s duration — way over limit
+        peak_pts=100.0,
+        peak_score=0.8,
+        keywords=[],
+        transcript_excerpt="",
+    )
+
+    result = processor._pre_filter(long_event)
+
+    assert result is not None
+    duration = result.end_pts - result.start_pts
+    assert duration <= MAX_PRE_LLM_DURATION, (
+        f"Expected trimmed duration <= {MAX_PRE_LLM_DURATION}s, got {duration:.1f}s"
+    )
+    # Peak must remain inside the trimmed boundary
+    assert result.start_pts <= long_event.peak_pts <= result.end_pts
+
+
+def test_pre_filter_passes_valid_event():
+    """Normal event must pass through unchanged."""
+    from src.engine.highlight_processor import HighlightProcessor
+    from src.engine.context_expander import ContextExpander
+    from src.core.models import ResolvedEvent
+
+    processor = HighlightProcessor(context_expander=ContextExpander())
+
+    good_event = ResolvedEvent(
+        start_pts=10.0,
+        end_pts=50.0,
+        peak_pts=30.0,
+        peak_score=0.75,
+        keywords=[],
+        transcript_excerpt="",
+    )
+
+    result = processor._pre_filter(good_event)
+
+    assert result is not None
+    assert result.start_pts == 10.0
+    assert result.end_pts == 50.0
+
