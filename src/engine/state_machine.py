@@ -1,12 +1,16 @@
+import logging
+import os
 from typing import Optional
 
 from src.core.models import EventCandidate, SignalSnapshot, ThresholdSet
 
+logger = logging.getLogger(__name__)
+
 
 class StateMachine:
-    OPEN_THR = 0.5
-    CONFIRM_THR = 0.65
-    CLOSE_THR = 0.25
+    OPEN_THR = float(os.environ.get("HIGHLIGHT_OPEN_THR", "0.5"))
+    CONFIRM_THR = float(os.environ.get("HIGHLIGHT_CONFIRM_THR", "0.65"))
+    CLOSE_THR = float(os.environ.get("HIGHLIGHT_CLOSE_THR", "0.25"))
     CLOSE_COOLDOWN = 5.0
     MAX_EVENT_DURATION = 120
     CHAT_CLOSE_RATIO = 1.5
@@ -29,6 +33,18 @@ class StateMachine:
         open_thr = thresholds.open_thr if thresholds else self.OPEN_THR
         confirm_thr = thresholds.confirm_thr if thresholds else self.CONFIRM_THR
         close_thr = thresholds.close_thr if thresholds else self.CLOSE_THR
+
+        logger.info(
+            "pts=%.1fs | score=%.3f (thr=%.2f/%.2f) | state=%s | energy=%.2f | laughter=%.2f | chat_vol=%.2f",
+            pts,
+            score,
+            open_thr,
+            confirm_thr,
+            ev.state,
+            snapshot.audio_energy,
+            snapshot.laughter_prob,
+            snapshot.chat_volume_spike,
+        )
 
         if ev.state == "IDLE":
             if score > open_thr:
