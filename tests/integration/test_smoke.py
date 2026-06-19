@@ -154,6 +154,10 @@ def test_full_pipeline_draft_to_final_lifecycle(tmp_path):
             chunk_duration_s=5.0,
         )
 
+        pipeline.highlight_processor.llm_gate = MagicMock()
+        pipeline.highlight_processor.llm_gate.is_rate_limited.return_value = False
+        pipeline.highlight_processor.llm_gate.should_refine_boundary.return_value = False
+
         worker.highlight_processor.pending_queue = PendingEventQueue(max_wait_sec=0)
         worker.context_expander.look_forward = MagicMock(
             side_effect=lambda **kwargs: kwargs["close_pts"]
