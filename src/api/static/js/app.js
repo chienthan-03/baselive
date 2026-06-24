@@ -390,8 +390,62 @@ function syncDetailPanel(h, { resetSliders = false } = {}) {
         dom.videoWrapper.hidden = true;
     }
 
-    dom.btnApprove.disabled = h.status === 'APPROVED';
-    dom.btnReject.disabled  = h.status === 'REJECTED';
+    renderDetailPanelActions(h);
+}
+
+function renderDetailPanelActions(h) {
+    const actionRow = document.querySelector('.action-row');
+    if (!actionRow) return;
+
+    const isPending = h.status === 'PENDING';
+    const isRejected = h.status === 'REJECTED';
+    const isApproved = h.status === 'APPROVED';
+    const isAdjusted = h.status === 'ADJUSTED';
+
+    let actionsHtml = '';
+
+    if (isPending) {
+        actionsHtml = `
+            <button class="btn btn-reject" id="btn-reject" aria-label="Từ chối highlight">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                Từ chối
+            </button>
+            <button class="btn btn-approve" id="btn-approve" aria-label="Phê duyệt highlight">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg>
+                Phê duyệt
+            </button>
+        `;
+    } else if (isRejected) {
+        actionsHtml = `
+            <span class="badge badge-rejected">Đã từ chối</span>
+            <button class="btn btn-danger" id="btn-delete-video" aria-label="Xóa video">
+                🗑️ Xóa video
+            </button>
+        `;
+    } else if (isApproved) {
+        actionsHtml = `
+            <span class="badge badge-approved">Đã duyệt</span>
+        `;
+    } else if (isAdjusted) {
+        actionsHtml = `
+            <span class="badge badge-adjusted">Đã chỉnh sửa</span>
+        `;
+    }
+
+    actionRow.innerHTML = actionsHtml;
+
+    // Reattach event listeners for dynamically created buttons
+    if (isPending) {
+        const btnApprove = document.getElementById('btn-approve');
+        const btnReject = document.getElementById('btn-reject');
+        if (btnApprove) btnApprove.addEventListener('click', handleDetailApprove);
+        if (btnReject) btnReject.addEventListener('click', handleDetailReject);
+    } else if (isRejected) {
+        const btnDeleteVideo = document.getElementById('btn-delete-video');
+        if (btnDeleteVideo) {
+            btnDeleteVideo.addEventListener('click', () => handleDeleteHighlight(h.id));
+        }
+    }
 }
 
 function loadVideoForHighlight(h, { force = false } = {}) {
@@ -531,10 +585,11 @@ async function handleDeleteHighlight(highlightId) {
 }
 
 // ── Actions ────────────────────────────────────────────────────────────
-dom.btnApprove.addEventListener('click', async () => {
+async function handleDetailApprove() {
     if (!state.selected) return;
+    const btn = document.getElementById('btn-approve');
     try {
-        dom.btnApprove.disabled = true;
+        if (btn) btn.disabled = true;
         await api.approve(state.selected.id);
         showToast('✅ Highlight đã được phê duyệt!', 'success');
         await refreshData({ force: true });
@@ -546,14 +601,15 @@ dom.btnApprove.addEventListener('click', async () => {
         }
     } catch (e) {
         showToast('❌ Lỗi khi phê duyệt. Thử lại.', 'error');
-        dom.btnApprove.disabled = false;
+        if (btn) btn.disabled = false;
     }
-});
+}
 
-dom.btnReject.addEventListener('click', async () => {
+async function handleDetailReject() {
     if (!state.selected) return;
+    const btn = document.getElementById('btn-reject');
     try {
-        dom.btnReject.disabled = true;
+        if (btn) btn.disabled = true;
         await api.reject(state.selected.id);
         showToast('🚫 Highlight đã bị từ chối.', 'info');
         await refreshData({ force: true });
@@ -565,9 +621,9 @@ dom.btnReject.addEventListener('click', async () => {
         }
     } catch (e) {
         showToast('❌ Lỗi khi từ chối. Thử lại.', 'error');
-        dom.btnReject.disabled = false;
+        if (btn) btn.disabled = false;
     }
-});
+}
 
 dom.btnAdjust.addEventListener('click', async () => {
     if (!state.selected) return;
