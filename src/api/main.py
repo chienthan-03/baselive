@@ -237,6 +237,41 @@ def llm_analyze_highlight(highlight_id: int, db: Database = Depends(get_db)):
         "reasoning": result.reasoning,
     }
 
+@router.delete("/api/highlights/{highlight_id}")
+def delete_highlight_endpoint(highlight_id: int, db: Database = Depends(get_db)):
+    """Delete a rejected highlight and its video files."""
+    h = db.get_highlight(highlight_id)
+    if not h:
+        raise HTTPException(status_code=404, detail="Highlight not found")
+    
+    if h["status"] != "REJECTED":
+        raise HTTPException(
+            status_code=403,
+            detail="Only rejected highlights can be deleted"
+        )
+    
+    # Get file paths before DB deletion
+    paths = db.delete_highlight(highlight_id)
+    
+    # Delete files from disk
+    deleted_paths = []
+    for path_key in ["clip_path", "draft_clip_path"]:
+        path = paths.get(path_key)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                deleted_paths.append(path)
+            except OSError as e:
+                logging.getLogger(__name__).warning(
+                    "Failed to delete file %s: %s", path, e
+                )
+    
+    return {
+        "id": highlight_id,
+        "status": "deleted",
+        "deleted_paths": deleted_paths
+    }
+
 @router.get("/metrics")
 def metrics():
     try:

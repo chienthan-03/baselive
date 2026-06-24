@@ -351,3 +351,52 @@ def test_health_ready_503_when_stale(stream_client, monkeypatch):
     )
     resp = client.get("/api/health/ready")
     assert resp.status_code == 503
+
+
+def test_delete_rejected_highlight_success(client, test_db, tmp_path):
+    """DELETE should remove rejected highlight and return success."""
+    # Insert a rejected highlight
+    cursor = test_db.conn.cursor()
+    cursor.execute('''
+        INSERT INTO highlights (stream_id, start_pts, end_pts, score, status, clip_path)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', ("s1", 10.0, 20.0, 0.8, "REJECTED", str(tmp_path / "clip.mp4")))
+    test_db.conn.commit()
+    
+    # Create the file
+    clip_path = tmp_path / "clip.mp4"
+    clip_path.write_text("fake video")
+    
+    # Delete it
+    response = client.delete("/api/highlights/1")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "deleted"
+    assert str(clip_path) in data["deleted_paths"]
+    
+    # Verify DB record gone
+    cursor.execute("SELECT * FROM highlights WHERE id = 1")
+    assert cursor.fetchone() is None
+    
+    # Verify file deleted
+    assert not clip_path.exists()
+
+
+def test_delete_non_rejected_highlight_fails(client, test_db):
+    """DELETE should fail if highlight is not REJECTED."""
+    cursor = test_db.conn.cursor()
+    cursor.execute('''
+        INSERT INTO highlights (stream_id, start_pts, end_pts, score, status)
+        VALUES (?, ?, ?, ?, ?)
+    ''', ("s1", 10.0, 20.0, 0.8, "PENDING"))
+    test_db.conn.commit()
+    
+    response = client.delete("/api/highlights/1")
+    assert response.status_code == 403
+    assert "Only rejected highlights" in response.json()["detail"]
+
+
+def test_delete_nonexistent_highlight_returns_404(client):
+    """DELETE should 404 if highlight doesn't exist."""
+    response = client.delete("/api/highlights/999")
+    assert response.status_code == 404
