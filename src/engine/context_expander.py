@@ -18,8 +18,8 @@ def _tokenize(text: str) -> Set[str]:
 
 
 class ContextExpander:
-    MAX_LOOKBACK = 300.0
-    MAX_LOOKFORWARD = 120.0
+    MAX_LOOKBACK = 60.0
+    MAX_LOOKFORWARD = 30.0
     STEP_SEC = 1.0
     NO_DATA_LOOKBACK_SEC = 30.0  # max lookback when signal buffer has no history
 

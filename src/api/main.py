@@ -255,16 +255,19 @@ def delete_highlight_endpoint(highlight_id: int, db: Database = Depends(get_db))
     
     # Delete files from disk
     deleted_paths = []
+    clips_dir = "output/clips"
     for path_key in ["clip_path", "draft_clip_path"]:
         path = paths.get(path_key)
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-                deleted_paths.append(path)
-            except OSError as e:
-                logging.getLogger(__name__).warning(
-                    "Failed to delete file %s: %s", path, e
-                )
+        if path:
+            full_path = os.path.join(clips_dir, path)
+            if os.path.exists(full_path):
+                try:
+                    os.remove(full_path)
+                    deleted_paths.append(full_path)
+                except OSError as e:
+                    logging.getLogger(__name__).warning(
+                        "Failed to delete file %s: %s", full_path, e
+                    )
     
     return {
         "id": highlight_id,

@@ -3,7 +3,7 @@ from typing import List, Sequence, Tuple
 from src.buffer.signal_history import HistoryEntry, SignalHistoryBuffer
 from src.core.models import MicroHighlight, ResolvedEvent
 
-MAX_SINGLE_HIGHLIGHT = 180.0
+MAX_SINGLE_HIGHLIGHT = 60.0
 MIN_PROMINENCE = 0.3
 MIN_PEAK_DISTANCE = 15.0
 TIKTOK_TARGET = 45.0
