@@ -15,6 +15,8 @@ const state = {
     startAdjust: 0,      // pre-roll delta (seconds, ≤ 0)
     endAdjust: 0,        // post-roll delta (seconds, ≥ 0)
     polling: null,       // setInterval handle
+    pendingRefresh: false,
+    clipUpdateAvailable: false,
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────────
@@ -72,6 +74,7 @@ const dom = {
 
     healthDot:          $('health-status-dot'),
     healthLabel:        $('health-status-label'),
+    clipUpdateBanner:   $('clip-update-banner'),
 };
 
 // ── API helpers ────────────────────────────────────────────────────────
@@ -145,6 +148,13 @@ const api = {
         }
         return data;
     },
+    async deleteHighlight(id) {
+        const res = await fetch(`/api/highlights/${id}`, {
+            method: 'DELETE',
+        });
+        if (!res.ok) throw new Error('Failed to delete highlight');
+        return res.json();
+    },
 };
 
 // ── Toast ──────────────────────────────────────────────────────────────
@@ -174,6 +184,38 @@ function fmtDuration(start, end) {
     const d = end - start;
     if (d < 60) return `${d.toFixed(1)}s`;
     return `${(d / 60).toFixed(1)} min`;
+}
+
+function isVideoPlaying() {
+    return (
+        !dom.videoWrapper.hidden &&
+        Boolean(dom.videoPlayer.src) &&
+        !dom.videoPlayer.paused &&
+        !dom.videoPlayer.ended
+    );
+}
+
+function clipSrcFromHighlight(h) {
+    const clipToPlay = h?.clip_path || h?.draft_clip_path;
+    if (!clipToPlay) return null;
+    const fileName = clipToPlay.split(/[\\/]/).pop();
+    return `/clips/${encodeURIComponent(fileName)}`;
+}
+
+function updateCardSelection(highlightId) {
+    document.querySelectorAll('.highlight-card').forEach(c => {
+        c.classList.toggle('selected', c.getAttribute('data-id') == highlightId);
+    });
+}
+
+function showClipUpdateBanner() {
+    if (!dom.clipUpdateBanner) return;
+    dom.clipUpdateBanner.hidden = false;
+}
+
+function hideClipUpdateBanner() {
+    if (!dom.clipUpdateBanner) return;
+    dom.clipUpdateBanner.hidden = true;
 }
 
 // ── Score Ring ─────────────────────────────────────────────────────────
@@ -282,81 +324,83 @@ function renderList() {
 }
 
 // ── Select Highlight ───────────────────────────────────────────────────
-function selectHighlight(h) {
-    try {
-        state.selected = h;
+function syncDetailPanel(h, { resetSliders = false } = {}) {
+    dom.previewPlaceholder.hidden = true;
+    dom.detailCard.hidden = false;
+
+    dom.detailTitle.textContent = `Highlight #${h.id}`;
+    dom.statusBadge.textContent = h.status;
+    dom.statusBadge.className = `status-badge ${h.status}`;
+    dom.detailStream.textContent = h.stream_id;
+    dom.detailStart.textContent = fmtTime(h.start_pts);
+    dom.detailEnd.textContent = fmtTime(h.end_pts);
+    dom.detailDuration.textContent = fmtDuration(h.start_pts, h.end_pts);
+    setScore(Math.max(0, Math.min(1, h.score ?? 0)));
+
+    if (resetSliders) {
         state.startAdjust = 0;
         state.endAdjust = 0;
-
-        // Update sidebar selection
-        document.querySelectorAll('.highlight-card').forEach(c => {
-            c.classList.toggle('selected', c.getAttribute('data-id') == h.id);
-        });
-
-        // Show detail panel
-        dom.previewPlaceholder.hidden = true;
-        dom.detailCard.hidden = false;
-
-        // Populate details
-        dom.detailTitle.textContent = `Highlight #${h.id}`;
-
-        // Status badge
-        dom.statusBadge.textContent = h.status;
-        dom.statusBadge.className = `status-badge ${h.status}`;
-
-        dom.detailStream.textContent = h.stream_id;
-        dom.detailStart.textContent = fmtTime(h.start_pts);
-        dom.detailEnd.textContent = fmtTime(h.end_pts);
-        dom.detailDuration.textContent = fmtDuration(h.start_pts, h.end_pts);
-
-        // Score ring
-        setScore(Math.max(0, Math.min(1, h.score ?? 0)));
-
-        // Reset sliders
         dom.sliderStart.value = 0;
         dom.sliderEnd.value = 0;
         dom.sliderStartVal.textContent = '0s';
         dom.sliderEndVal.textContent = '0s';
+    }
 
-        // Video player
-        const clipToPlay = h.clip_path || h.draft_clip_path;
-        if (clipToPlay) {
-            // Extract filename from path for URL
-            const fileName = clipToPlay.split(/[\\/]/).pop();
-            const newSrc = `/clips/${encodeURIComponent(fileName)}`;
-            
-            // Only reload if the source actually changed
-            if (dom.videoPlayer.getAttribute('data-src') !== newSrc) {
-                const wasPlaying = !dom.videoPlayer.paused;
-                const currentTime = dom.videoPlayer.currentTime;
-                
-                dom.videoPlayer.setAttribute('data-src', newSrc);
-                dom.videoPlayer.src = newSrc;
-                dom.videoPlayer.load();
-                
-                if (wasPlaying) {
-                    const onMetadata = () => {
-                        dom.videoPlayer.currentTime = currentTime;
-                        dom.videoPlayer.play().catch(() => {});
-                        dom.videoPlayer.removeEventListener('loadedmetadata', onMetadata);
-                    };
-                    dom.videoPlayer.addEventListener('loadedmetadata', onMetadata);
-                }
-            }
-            dom.videoWrapper.hidden = false;
-            dom.videoOverlay.textContent = `Score ${Math.round((h.score ?? 0) * 100)}% · ${fmtDuration(h.start_pts, h.end_pts)}`;
-        } else {
-            dom.videoPlayer.removeAttribute('data-src');
-            dom.videoPlayer.src = '';
-            dom.videoWrapper.hidden = true;
-        }
+    const clipToPlay = h.clip_path || h.draft_clip_path;
+    if (clipToPlay) {
+        dom.videoWrapper.hidden = false;
+        dom.videoOverlay.textContent =
+            `Score ${Math.round((h.score ?? 0) * 100)}% · ${fmtDuration(h.start_pts, h.end_pts)}`;
+    } else {
+        dom.videoWrapper.hidden = true;
+    }
 
-        // Button states
-        dom.btnApprove.disabled = h.status === 'APPROVED';
-        dom.btnReject.disabled  = h.status === 'REJECTED';
+    dom.btnApprove.disabled = h.status === 'APPROVED';
+    dom.btnReject.disabled  = h.status === 'REJECTED';
+}
+
+function loadVideoForHighlight(h, { force = false } = {}) {
+    const newSrc = clipSrcFromHighlight(h);
+    if (!newSrc) {
+        dom.videoPlayer.removeAttribute('data-src');
+        dom.videoPlayer.src = '';
+        dom.videoWrapper.hidden = true;
+        return;
+    }
+
+    const currentSrc = dom.videoPlayer.getAttribute('data-src');
+    if (!force && currentSrc === newSrc) return;
+
+    const wasPlaying = !dom.videoPlayer.paused;
+    const currentTime = dom.videoPlayer.currentTime;
+
+    dom.videoPlayer.setAttribute('data-src', newSrc);
+    dom.videoPlayer.src = newSrc;
+    dom.videoPlayer.load();
+
+    if (wasPlaying) {
+        const onMetadata = () => {
+            dom.videoPlayer.currentTime = currentTime;
+            dom.videoPlayer.play().catch(() => {});
+            dom.videoPlayer.removeEventListener('loadedmetadata', onMetadata);
+        };
+        dom.videoPlayer.addEventListener('loadedmetadata', onMetadata);
+    }
+
+    dom.videoWrapper.hidden = false;
+}
+
+function selectHighlight(h) {
+    try {
+        state.selected = h;
+        state.clipUpdateAvailable = false;
+        hideClipUpdateBanner();
+        syncDetailPanel(h, { resetSliders: true });
+        loadVideoForHighlight(h);
+        updateCardSelection(h.id);
     } catch (err) {
-        console.error("Error in selectHighlight:", err);
-        showToast("❌ Lỗi hiển thị highlight: " + err.message, "error");
+        console.error('Error in selectHighlight:', err);
+        showToast('❌ Lỗi hiển thị highlight: ' + err.message, 'error');
     }
 }
 
@@ -378,10 +422,13 @@ dom.btnApprove.addEventListener('click', async () => {
         dom.btnApprove.disabled = true;
         await api.approve(state.selected.id);
         showToast('✅ Highlight đã được phê duyệt!', 'success');
-        await refreshData();
-        // Re-select the updated version
+        await refreshData({ force: true });
         const updated = state.highlights.find(h => h.id === state.selected?.id);
-        if (updated) selectHighlight(updated);
+        if (updated) {
+            state.selected = updated;
+            syncDetailPanel(updated, { resetSliders: false });
+            updateCardSelection(updated.id);
+        }
     } catch (e) {
         showToast('❌ Lỗi khi phê duyệt. Thử lại.', 'error');
         dom.btnApprove.disabled = false;
@@ -394,9 +441,13 @@ dom.btnReject.addEventListener('click', async () => {
         dom.btnReject.disabled = true;
         await api.reject(state.selected.id);
         showToast('🚫 Highlight đã bị từ chối.', 'info');
-        await refreshData();
+        await refreshData({ force: true });
         const updated = state.highlights.find(h => h.id === state.selected?.id);
-        if (updated) selectHighlight(updated);
+        if (updated) {
+            state.selected = updated;
+            syncDetailPanel(updated, { resetSliders: false });
+            updateCardSelection(updated.id);
+        }
     } catch (e) {
         showToast('❌ Lỗi khi từ chối. Thử lại.', 'error');
         dom.btnReject.disabled = false;
@@ -415,9 +466,13 @@ dom.btnAdjust.addEventListener('click', async () => {
         dom.btnAdjust.disabled = true;
         await api.adjust(state.selected.id, newStart, newEnd);
         showToast('✏️ Đã cập nhật ranh giới clip.', 'success');
-        await refreshData();
+        await refreshData({ force: true });
         const updated = state.highlights.find(h => h.id === state.selected?.id);
-        if (updated) selectHighlight(updated);
+        if (updated) {
+            state.selected = updated;
+            syncDetailPanel(updated, { resetSliders: false });
+            updateCardSelection(updated.id);
+        }
     } catch (e) {
         showToast('❌ Lỗi khi cập nhật. Thử lại.', 'error');
     } finally {
@@ -429,7 +484,8 @@ dom.btnAdjust.addEventListener('click', async () => {
 dom.btnRefresh.addEventListener('click', async () => {
     dom.btnRefresh.disabled = true;
     dom.btnRefresh.style.opacity = '0.6';
-    await refreshData();
+    await refreshStreams({ force: true });
+    await refreshData({ force: true });
     dom.btnRefresh.disabled = false;
     dom.btnRefresh.style.opacity = '';
     showToast('🔄 Đã làm mới danh sách.', 'default');
@@ -637,9 +693,62 @@ async function handleStopStream(streamId, btn) {
 dom.liveForm.addEventListener('submit', handleStartLive);
 
 // ── Data fetching ──────────────────────────────────────────────────────
-async function refreshStreams() {
+function highlightFieldsChanged(a, b) {
+    return (
+        a.clip_path !== b.clip_path ||
+        a.draft_clip_path !== b.draft_clip_path ||
+        a.start_pts !== b.start_pts ||
+        a.end_pts !== b.end_pts ||
+        a.status !== b.status ||
+        a.score !== b.score
+    );
+}
+
+function maybeFlagClipUpdate() {
+    if (!state.selected) return;
+    const fresh = state.highlights.find(h => h.id === state.selected.id);
+    if (!fresh) return;
+
+    const newSrc = clipSrcFromHighlight(fresh);
+    const currentSrc = dom.videoPlayer.getAttribute('data-src');
+    if (newSrc && newSrc !== currentSrc) {
+        state.clipUpdateAvailable = true;
+        state.selected = fresh;
+        showClipUpdateBanner();
+    } else if (highlightFieldsChanged(fresh, state.selected)) {
+        state.selected = fresh;
+    }
+}
+
+function maybeUpdateSelectedFromPoll() {
+    if (!state.selected) return;
+    const fresh = state.highlights.find(h => h.id === state.selected.id);
+    if (!fresh) return;
+    if (!highlightFieldsChanged(fresh, state.selected)) return;
+
+    const newSrc = clipSrcFromHighlight(fresh);
+    const currentSrc = dom.videoPlayer.getAttribute('data-src');
+    const srcChanged = newSrc !== currentSrc;
+
+    state.selected = fresh;
+    syncDetailPanel(fresh, { resetSliders: false });
+    updateCardSelection(fresh.id);
+
+    if (srcChanged && state.clipUpdateAvailable) {
+        return;
+    }
+    if (srcChanged) {
+        loadVideoForHighlight(fresh);
+    }
+}
+
+async function refreshStreams({ force = false } = {}) {
     try {
         state.streams = await api.getStreams();
+        if (!force && isVideoPlaying()) {
+            state.pendingRefresh = true;
+            return;
+        }
         renderStreamOptions();
         renderActiveStreams();
     } catch (e) {
@@ -647,27 +756,26 @@ async function refreshStreams() {
     }
 }
 
-async function refreshData() {
+async function refreshData({ force = false } = {}) {
     try {
         state.highlights = await api.getHighlights(state.streamFilter);
+
+        if (!force && isVideoPlaying()) {
+            state.pendingRefresh = true;
+            maybeFlagClipUpdate();
+            return;
+        }
+
+        state.pendingRefresh = false;
+        if (force) {
+            state.clipUpdateAvailable = false;
+            hideClipUpdateBanner();
+        } else if (!state.clipUpdateAvailable) {
+            hideClipUpdateBanner();
+        }
         renderStreamOptions();
         renderList();
-
-        // If there's a selected highlight, update it with the fresh data
-        if (state.selected) {
-            const fresh = state.highlights.find(h => h.id === state.selected.id);
-            if (fresh) {
-                const changed = fresh.clip_path !== state.selected.clip_path ||
-                                fresh.draft_clip_path !== state.selected.draft_clip_path ||
-                                fresh.start_pts !== state.selected.start_pts ||
-                                fresh.end_pts !== state.selected.end_pts ||
-                                fresh.status !== state.selected.status ||
-                                fresh.score !== state.selected.score;
-                if (changed) {
-                    selectHighlight(fresh);
-                }
-            }
-        }
+        maybeUpdateSelectedFromPoll();
     } catch (e) {
         console.error('Fetch error:', e);
     }
@@ -712,6 +820,26 @@ async function refreshHealth() {
 }
 
 // ── Polling (every 8 seconds) ──────────────────────────────────────────
+async function flushPendingRefresh() {
+    if (!state.pendingRefresh) return;
+    state.pendingRefresh = false;
+    await refreshStreams({ force: true });
+    await refreshData({ force: true });
+}
+
+dom.videoPlayer.addEventListener('pause', () => { flushPendingRefresh(); });
+dom.videoPlayer.addEventListener('ended', () => { flushPendingRefresh(); });
+
+if (dom.clipUpdateBanner) {
+    dom.clipUpdateBanner.addEventListener('click', () => {
+        if (!state.selected) return;
+        state.clipUpdateAvailable = false;
+        hideClipUpdateBanner();
+        loadVideoForHighlight(state.selected, { force: true });
+        dom.videoPlayer.play().catch(() => {});
+    });
+}
+
 function startPolling() {
     state.polling = setInterval(async () => {
         await refreshHealth();
