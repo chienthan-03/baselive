@@ -161,6 +161,34 @@ class Database:
                        (start_pts, end_pts, highlight_id))
         self.conn.commit()
 
+    def delete_highlight(self, highlight_id: int) -> Optional[Dict[str, str]]:
+        """Delete highlight and return file paths for cleanup.
+        
+        Returns:
+            Dict with clip_path and draft_clip_path, or None if not found.
+        """
+        cursor = self.conn.cursor()
+        
+        # Get file paths before deletion
+        cursor.execute(
+            "SELECT clip_path, draft_clip_path FROM highlights WHERE id = ?",
+            (highlight_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        
+        paths = {
+            "clip_path": row[0],
+            "draft_clip_path": row[1],
+        }
+        
+        # Delete the record
+        cursor.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
+        self.conn.commit()
+        
+        return paths
+
     def update_highlight(self, highlight_id: int, **fields):
         """Updates arbitrary allowed fields on a highlight."""
         allowed = {

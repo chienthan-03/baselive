@@ -110,3 +110,30 @@ def test_streams_table_crud(test_db):
     assert row["status"] == "RUNNING"
     test_db.update_stream_status("s1", "STOPPED", ended_at=200.0)
     assert test_db.get_stream("s1")["status"] == "STOPPED"
+
+
+def test_delete_highlight_removes_record_and_returns_paths(test_db):
+    """delete_highlight should remove record and return file paths."""
+    # Insert a highlight
+    h_id = test_db.insert_highlight(
+        stream_id="test_stream",
+        start_pts=10.0,
+        end_pts=20.0,
+        score=0.8,
+        clip_path="output/clips/test.mp4",
+        draft_clip_path="output/clips/draft_test.mp4",
+        status="REJECTED",
+    )
+    
+    # Delete it
+    paths = test_db.delete_highlight(h_id)
+    
+    # Verify paths returned
+    assert paths is not None
+    assert paths["clip_path"] == "output/clips/test.mp4"
+    assert paths["draft_clip_path"] == "output/clips/draft_test.mp4"
+    
+    # Verify record deleted
+    cursor = test_db.conn.cursor()
+    cursor.execute("SELECT * FROM highlights WHERE id = ?", (h_id,))
+    assert cursor.fetchone() is None
