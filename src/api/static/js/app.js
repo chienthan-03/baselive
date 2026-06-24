@@ -297,6 +297,36 @@ function renderList() {
         const dur = fmtDuration(h.start_pts, h.end_pts);
         const scorePercent = Math.round((h.score ?? 0) * 100);
 
+        // Build actions HTML based on status
+        let actionsHtml = '';
+        if (h.status === 'PENDING') {
+            actionsHtml = `
+                <div class="card-actions">
+                    <button class="btn btn-approve btn-sm" data-id="${h.id}">Duyệt</button>
+                    <button class="btn btn-reject btn-sm" data-id="${h.id}">Từ chối</button>
+                </div>
+            `;
+        } else if (h.status === 'REJECTED') {
+            actionsHtml = `
+                <div class="card-actions">
+                    <span class="badge badge-rejected">Đã từ chối</span>
+                    <button class="btn btn-delete" data-id="${h.id}" title="Xóa video">🗑️</button>
+                </div>
+            `;
+        } else if (h.status === 'APPROVED') {
+            actionsHtml = `
+                <div class="card-actions">
+                    <span class="badge badge-approved">Đã duyệt</span>
+                </div>
+            `;
+        } else if (h.status === 'ADJUSTED') {
+            actionsHtml = `
+                <div class="card-actions">
+                    <span class="badge badge-adjusted">Đã chỉnh sửa</span>
+                </div>
+            `;
+        }
+
         card.innerHTML = `
             <div class="card-top">
                 <span class="card-id">Highlight #${h.id}</span>
@@ -312,9 +342,14 @@ function renderList() {
             <div class="card-score-bar">
                 <div class="card-score-fill" style="width:${scorePercent}%"></div>
             </div>
+            ${actionsHtml}
         `;
 
-        card.addEventListener('click', () => selectHighlight(h));
+        card.addEventListener('click', (e) => {
+            // Don't select if clicking on buttons
+            if (e.target.closest('button')) return;
+            selectHighlight(h);
+        });
         card.addEventListener('keydown', e => {
             if (e.key === 'Enter' || e.key === ' ') selectHighlight(h);
         });
@@ -414,6 +449,86 @@ dom.sliderEnd.addEventListener('input', () => {
     state.endAdjust = parseFloat(dom.sliderEnd.value);
     dom.sliderEndVal.textContent = `+${state.endAdjust}s`;
 });
+
+// ── Event delegation for highlight card buttons ───────────────────────
+dom.list.addEventListener('click', async (e) => {
+    const target = e.target.closest('button');
+    if (!target) return;
+
+    const highlightId = parseInt(target.dataset.id);
+    if (!highlightId) return;
+
+    // Approve button handler
+    if (target.classList.contains('btn-approve')) {
+        try {
+            target.disabled = true;
+            await api.approve(highlightId);
+            showToast('✅ Highlight đã được phê duyệt!', 'success');
+            await refreshData({ force: true });
+            const updated = state.highlights.find(h => h.id === highlightId);
+            if (updated && state.selected?.id === highlightId) {
+                state.selected = updated;
+                syncDetailPanel(updated, { resetSliders: false });
+                updateCardSelection(updated.id);
+            }
+        } catch (err) {
+            showToast('❌ Lỗi khi phê duyệt. Thử lại.', 'error');
+            target.disabled = false;
+        }
+    }
+
+    // Reject button handler
+    if (target.classList.contains('btn-reject')) {
+        try {
+            target.disabled = true;
+            await api.reject(highlightId);
+            showToast('🚫 Highlight đã bị từ chối.', 'info');
+            await refreshData({ force: true });
+            const updated = state.highlights.find(h => h.id === highlightId);
+            if (updated && state.selected?.id === highlightId) {
+                state.selected = updated;
+                syncDetailPanel(updated, { resetSliders: false });
+                updateCardSelection(updated.id);
+            }
+        } catch (err) {
+            showToast('❌ Lỗi khi từ chối. Thử lại.', 'error');
+            target.disabled = false;
+        }
+    }
+
+    // Delete button handler
+    if (target.classList.contains('btn-delete')) {
+        handleDeleteHighlight(highlightId);
+    }
+});
+
+// ── Delete highlight function ──────────────────────────────────────────
+async function handleDeleteHighlight(highlightId) {
+    if (!confirm('Xóa video này? Không thể hoàn tác.')) {
+        return;
+    }
+
+    try {
+        await api.deleteHighlight(highlightId);
+
+        // Remove from state
+        state.highlights = state.highlights.filter(h => h.id !== highlightId);
+        renderList();
+
+        // If currently viewing this highlight, clear it
+        if (state.selected?.id === highlightId) {
+            state.selected = null;
+            dom.videoWrapper.hidden = true;
+            dom.previewPlaceholder.hidden = false;
+            dom.detailCard.hidden = true;
+        }
+
+        showToast('🗑️ Đã xóa video', 'success');
+    } catch (err) {
+        console.error('Delete failed:', err);
+        showToast('❌ Không thể xóa video: ' + err.message, 'error');
+    }
+}
 
 // ── Actions ────────────────────────────────────────────────────────────
 dom.btnApprove.addEventListener('click', async () => {
